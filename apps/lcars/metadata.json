@@ -18,4 +18,5 @@
     {"name":"lcars.settings.js","url":"lcars.settings.js"}
   ],
   "data":[{"name":"lcars.setting.json"}]
+  "dependencies" : { "clock_info":"module" },
 }
