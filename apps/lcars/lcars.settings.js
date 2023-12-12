@@ -16,6 +16,7 @@
     disableAlarms: false,
     disableData: false,
     randomColors: false,
+    clockInfo: false,
   };
   let saved_settings = storage.readJSON(SETTINGS_FILE, 1) || settings;
   for (const key in saved_settings) {
@@ -139,6 +140,14 @@ var bg_code = [
       format: () => (settings.randomColors ? 'Yes' : 'No'),
       onchange: () => {
         settings.randomColors = !settings.randomColors;
+        save();
+      },
+    },
+    'Clock Info Enabled': {
+      value: settings.clockInfo,
+      format: () => (settings.clockInfo ? 'Yes' : 'No'),
+      onchange: () => {
+        settings.clockInfo = !settings.clockInfo;
         save();
       },
     },
