@@ -17,6 +17,7 @@ let settings = {
   disableAlarms: false,
   disableData: false,
   randomColors: false,
+  clockInfo: false,
 };
 let saved_settings = storage.readJSON(SETTINGS_FILE, 1) || settings;
 for (const key in saved_settings) {
