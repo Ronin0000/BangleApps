@@ -4,6 +4,7 @@ const SETTINGS_FILE = "lcars.setting.json";
 const locale = require('locale');
 const storage = require('Storage');
 const widget_utils = require('widget_utils');
+let clockInfoItems = require("clock_info").load();
 let settings = {
   alarm: -1,
   dataRow1: "Steps",
@@ -41,7 +42,6 @@ var bg_code = [
   '#B22222', '#8B0000', '#00FFFF', '#008000', '#4169E1', '#FF4500', '#40E0D0', '#FF69B4',
   '#DAA520', '#00BFFF'
 ];
-
 
 
 let color1;
