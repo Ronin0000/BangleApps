@@ -1,1 +1,2 @@
 0.01: App is created with gradient background.
+0.02: Removed Bangle JS 1 support and added Bangle JS 2 support. Renamed app to Google Calendar and add the option to import events to google calendar and changed UI and controls to support bangle JS.2.
