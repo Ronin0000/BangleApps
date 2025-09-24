@@ -1,30 +1,80 @@
 <html>
   <head>
+    <meta charset="utf-8" />
+    <title>Weekly Schedule → Bangle.js 2</title>
     <style>
       body { padding:0; margin:0; }
-      html, body, #map { height:100%; width:100%; }
+      html, body, #calendar { height:100%; width:100%; }
       #controls {
-        padding:10px; margin:10px; border:1px solid black;
-        position:absolute; right:0; bottom:0;
-        background:#fff; z-index:100;
+        position: sticky; top:0; z-index: 10;
+        background:#fff; padding:10px; border-bottom:1px solid #ddd;
+        display:flex; flex-wrap:wrap; gap:8px; align-items:center;
       }
+      .spacer { flex: 1 1 auto; }
+      .muted { opacity: 0.75; font-size: 12px; }
     </style>
     <link href="fullcalendar/main.css" rel="stylesheet" />
     <link rel="stylesheet" href="../../css/spectre.min.css">
+
+    <!-- Google APIs: gapi client + Google Identity Services -->
+    <script src="https://apis.google.com/js/api.js" async defer></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
-    <div>
-      <p>Create your events on the week shown. (They repeat weekly.)</p>
-      <p>When done, click <button id="upload" class="btn btn-primary">Upload</button>.</p>
-      <p>All-day events are not supported.</p>
+    <div id="controls">
+      <button id="prev" class="btn">◀ Prev</button>
+      <button id="today" class="btn">Today</button>
+      <button id="next" class="btn">Next ▶</button>
+      <div class="spacer"></div>
+      <button id="signin" class="btn btn-primary">Sign in with Google</button>
+      <button id="signout" class="btn" disabled>Sign out</button>
+      <select id="calendarSelect" class="form-select" disabled>
+        <option value="">Select a calendar…</option>
+      </select>
+      <label class="form-switch" style="margin:0 8px;">
+        <input id="clearBeforeImport" type="checkbox" checked>
+        <i class="form-icon"></i> Clear existing before import
+      </label>
+      <button id="importWeek" class="btn" disabled>Import This Week</button>
+      <button id="upload" class="btn btn-success">Upload to Watch</button>
     </div>
+
+    <p class="muted" style="padding:0 10px 8px;">
+      Create or import events in the current week (they repeat weekly). All-day events are ignored.
+    </p>
+
+    <div id="calendar"></div>
 
     <script src="fullcalendar/main.js"></script>
     <script src="../../core/lib/customize.js"></script>
 
     <script>
-      let calendar;
+      // ====== CONFIG (put your keys here) ======
+      const GCAL = {
+        API_KEY: "YOUR_API_KEY_HERE",
+        CLIENT_ID: "YOUR_OAUTH_CLIENT_ID_HERE", // Web client
+        DISCOVERY_DOC: "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
+        SCOPES: "https://www.googleapis.com/auth/calendar.readonly"
+      };
 
+      let calendar;             // FullCalendar instance
+      let gapiInited = false;   // gapi client loaded?
+      let gisInited = false;    // GIS token client ready?
+      let tokenClient = null;   // GIS token client
+      let authed = false;       // do we have an access token?
+
+      // ====== UI Elements ======
+      const el = id => document.getElementById(id);
+      const btnSignin  = el("signin");
+      const btnSignout = el("signout");
+      const selCal     = el("calendarSelect");
+      const btnImport  = el("importWeek");
+      const chkClear   = el("clearBeforeImport");
+      const btnPrev    = el("prev");
+      const btnNext    = el("next");
+      const btnToday   = el("today");
+
+      // ====== Calendar (browser) ======
       document.addEventListener("DOMContentLoaded", function () {
         const calendarEl = document.getElementById("calendar");
         calendar = new FullCalendar.Calendar(calendarEl, {
@@ -35,11 +85,11 @@
           selectable: true,
           selectMirror: true,
           nowIndicator: true,
-          height: 600,
-          initialDate: "2018-06-03",
+          height: "auto",
+          initialDate: new Date().toISOString().slice(0,10),
           select: function (arg) {
             if (arg.allDay) {
-              alert("All-day events are not supported. Please select a time range.");
+              alert("All-day events aren’t supported. Select a time range.");
               calendar.unselect();
               return;
             }
@@ -59,43 +109,230 @@
           }
         });
         calendar.render();
+
+        // Navigation buttons
+        btnPrev.onclick  = () => calendar.prev();
+        btnNext.onclick  = () => calendar.next();
+        btnToday.onclick = () => calendar.today();
       });
 
-      function buildSchedule() {
+      // ====== Google API bootstrapping ======
+      window.addEventListener("load", () => {
+        // gapi client
+        window.gapiLoaded = async function() {
+          await gapi.load("client", async () => {
+            try {
+              await gapi.client.init({
+                apiKey: GCAL.API_KEY,
+                discoveryDocs: [GCAL.DISCOVERY_DOC]
+              });
+              gapiInited = true;
+              maybeEnableAuth();
+            } catch (e) {
+              console.error("gapi init error", e);
+              alert("Failed to init Google API client. Check your API key.");
+            }
+          });
+        };
+        // GIS (OAuth)
+        window.gisLoaded = function() {
+          tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: GCAL.CLIENT_ID,
+            scope: GCAL.SCOPES,
+            callback: (resp) => {
+              if (resp.error) {
+                console.error(resp);
+                alert("OAuth error. Check console.");
+                return;
+              }
+              gapi.client.setToken({access_token: resp.access_token});
+              authed = true;
+              onAuthedChanged(true);
+              loadCalendarList();
+            }
+          });
+          gisInited = true;
+          maybeEnableAuth();
+        };
+      });
+
+      function maybeEnableAuth() {
+        if (gapiInited && gisInited) {
+          btnSignin.disabled = false;
+        }
+      }
+
+      btnSignin.addEventListener("click", () => {
+        if (!tokenClient) return;
+        tokenClient.requestAccessToken({ prompt: "consent" });
+      });
+
+      btnSignout.addEventListener("click", async () => {
+        const tok = gapi.client.getToken();
+        if (tok && tok.access_token) {
+          try {
+            google.accounts.oauth2.revoke(tok.access_token, ()=>{});
+          } catch(e){}
+        }
+        gapi.client.setToken(null);
+        authed = false;
+        onAuthedChanged(false);
+      });
+
+      function onAuthedChanged(isAuthed) {
+        btnSignin.disabled = isAuthed;
+        btnSignout.disabled = !isAuthed;
+        selCal.disabled = !isAuthed;
+        btnImport.disabled = !isAuthed || !selCal.value;
+      }
+
+      async function loadCalendarList() {
+        try {
+          const res = await gapi.client.calendar.calendarList.list({minAccessRole:"reader", showHidden:false, maxResults:250});
+          const items = res.result.items || [];
+          // Populate dropdown
+          selCal.innerHTML = '<option value="">Select a calendar…</option>';
+          items.forEach(c => {
+            const opt = document.createElement("option");
+            opt.value = c.id;
+            opt.textContent = c.summary + (c.primary ? " (Primary)" : "");
+            selCal.appendChild(opt);
+          });
+          selCal.onchange = () => { btnImport.disabled = !selCal.value || !authed; };
+        } catch (e) {
+          console.error(e);
+          alert("Failed to load calendar list.");
+        }
+      }
+
+      // ====== Import current week from selected calendar ======
+      btnImport.addEventListener("click", async () => {
+        if (!selCal.value) { alert("Pick a calendar first."); return; }
+        const view = calendar.view;
+        const timeMin = view.activeStart.toISOString();
+        const timeMax = view.activeEnd.toISOString();
+
+        if (chkClear.checked) {
+          calendar.getEvents().forEach(ev => ev.remove());
+        }
+
+        try {
+          const res = await gapi.client.calendar.events.list({
+            calendarId: selCal.value,
+            timeMin, timeMax,
+            singleEvents: true,
+            orderBy: "startTime",
+            showDeleted: false,
+            maxResults: 2500
+          });
+          const items = res.result.items || [];
+
+          let added = 0, skippedAllDay = 0, splitOverMidnight = 0;
+
+          for (const it of items) {
+            // Skip all-day events
+            if (it.start && it.start.date && !it.start.dateTime) {
+              skippedAllDay++;
+              continue;
+            }
+            if (!it.start || !it.start.dateTime || !it.end || !it.end.dateTime) continue;
+
+            const start = new Date(it.start.dateTime);
+            const end   = new Date(it.end.dateTime);
+
+            // If same-day, add directly
+            if (start.toDateString() === end.toDateString()) {
+              calendar.addEvent({
+                title: (it.summary || "").trim(),
+                start, end, allDay: false
+              });
+              added++;
+            } else {
+              // Simple split into two blocks (start->23:59, 00:00->end)
+              const endOfStart = new Date(start);
+              endOfStart.setHours(23,59,0,0);
+              if (end > start) {
+                calendar.addEvent({
+                  title: (it.summary || "").trim(),
+                  start: start,
+                  end: endOfStart,
+                  allDay: false
+                });
+                // Only add part 2 if the end isn't exactly midnight (00:00)
+                if (!(end.getHours()===0 && end.getMinutes()===0)) {
+                  const startOfEnd = new Date(end);
+                  startOfEnd.setHours(0,0,0,0);
+                  calendar.addEvent({
+                    title: (it.summary || "").trim(),
+                    start: startOfEnd,
+                    end: end,
+                    allDay: false
+                  });
+                }
+                splitOverMidnight++;
+                added += 2;
+              }
+            }
+          }
+          alert(`Imported ${added} events.${skippedAllDay?` Skipped ${skippedAllDay} all-day.`:""}${splitOverMidnight?` (${splitOverMidnight} split across midnight)`: ""}`);
+        } catch (e) {
+          console.error(e);
+          alert("Failed to import events. Check console.");
+        }
+      });
+
+      // ====== Build schedule + Upload to Bangle.js 2 ======
+      document.getElementById("upload").addEventListener("click", function () {
+        const schedule = buildScheduleFromCalendar();
+        const app = makeBangle2App(schedule);
+        sendCustomizedApp({
+          storage: [{ name: "schoolCalendar.app.js", url: "app.js", content: app }]
+        });
+      });
+
+      function buildScheduleFromCalendar() {
         const events = calendar.getEvents();
         const schedule = [];
 
-        for (let i = 0; i < events.length; i++) {
-          const e = events[i];
-          if (!e.start || !e.end || e.allDay) continue; // skip invalid/all-day
-
-          const s = new Date(e.start);
-          const t = new Date(e.end);
-
+        function pushItem(title, s, e) {
           schedule.push({
-            cn: String(e.title || "").trim(),
-            dow: s.getDay(),            // 0=Sun..6=Sat
+            cn: String(title || "").trim(),
+            dow: s.getDay(),
             sh: s.getHours(),
             sm: s.getMinutes(),
-            eh: t.getHours(),
-            em: t.getMinutes()
+            eh: e.getHours(),
+            em: e.getMinutes()
           });
         }
 
-        // sort by start minute-of-week
-        schedule.sort((a, b) => {
-          const am = a.dow*1440 + a.sh*60 + a.sm;
-          const bm = b.dow*1440 + b.sh*60 + b.sm;
-          return am - bm;
-        });
+        for (const e of events) {
+          if (!e.start || !e.end || e.allDay) continue;
+          const s = new Date(e.start);
+          const t = new Date(e.end);
 
+          // Same-day
+          if (s.toDateString() === t.toDateString()) {
+            pushItem(e.title, s, t);
+          } else {
+            // Cross-midnight: split into two segments
+            const endOfStart = new Date(s); endOfStart.setHours(23,59,0,0);
+            pushItem(e.title, s, endOfStart);
+
+            if (!(t.getHours()===0 && t.getMinutes()===0)) {
+              const startOfEnd = new Date(t); startOfEnd.setHours(0,0,0,0);
+              pushItem(e.title, startOfEnd, t);
+            }
+          }
+        }
+
+        // Sort by start minute-of-week
+        schedule.sort((a,b) => (a.dow*1440 + a.sh*60 + a.sm) - (b.dow*1440 + b.sh*60 + b.sm));
         return schedule;
       }
 
-      document.getElementById("upload").addEventListener("click", function () {
-        const schedule = buildSchedule();
-
-        const app = `
+      // ====== Bangle.js 2 viewer (same core as previous response) ======
+      function makeBangle2App(schedule) {
+        return `
 /* Bangle.js 2 weekly schedule viewer (autogenerated) */
 const Storage = require("Storage");
 const Layout = require("Layout");
@@ -103,9 +340,9 @@ require("Font8x12").add(Graphics);
 require("Font7x11Numeric7Seg").add(Graphics);
 
 // ------- Data from uploader -------
-const RAW_SCHEDULE = ${JSON.stringify(schedule)};
+const RAW_SCHEDULE = ${JSON.stringify([])}.concat(${JSON.stringify(schedule)});
 
-// Precompute minutes-of-week and sort (safety if user edits on-watch later)
+// Normalize + sort
 const SCHEDULE = RAW_SCHEDULE.map(e => ({
   cn: e.cn,
   dow: e.dow|0,
@@ -117,15 +354,14 @@ const SCHEDULE = RAW_SCHEDULE.map(e => ({
   endMin:   (e.dow|0)*1440 + (e.eh|0)*60 + (e.em|0)
 })).sort((a,b)=>a.startMin-b.startMin);
 
-// Persist JSON for other apps/tools if needed
+// Persist JSON for other apps
 Storage.writeJSON("schoolCalendar.json", SCHEDULE);
 
-// ------- Helpers -------
 function pad2(n){ return (n<10?"0":"")+n; }
-function dayName(d, mode){ // 0=Sun..6=Sat
-  const full = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-  const shrt = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-  const one  = ["S","M","T","W","R","F","S"];
+function dayName(d, mode){
+  const full=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const shrt=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const one =["S","M","T","W","R","F","S"];
   if (mode===1) return full[d]||"";
   if (mode===2) return shrt[d]||"";
   return one[d]||"";
@@ -140,180 +376,104 @@ function findNextIndex(){
   for (let i=0;i<SCHEDULE.length;i++){
     if (SCHEDULE[i].startMin > m) return i;
   }
-  return 0; // wrap-around to first of the week
+  return 0;
 }
 
-// ------- UI State -------
-let scene = "LIST"; // or "INFO"
-let cursor = Math.max(0, findNextIndex()); // which row is 'selected'
-let topIndex = 0; // topmost row in list viewport
+let scene="LIST";
+let cursor=Math.max(0,findNextIndex());
+let topIndex=0;
 
-// ------- Drawing -------
 function drawList(){
-  const R = Bangle.appRect;
-  const W = R.w, H = R.h;
-  g.reset();
-  g.clearRect(R.x, R.y, R.x2, R.y2);
+  const R=Bangle.appRect; const W=R.w,H=R.h;
+  g.reset(); g.clearRect(R.x,R.y,R.x2,R.y2);
 
-  // Time header
-  const n = new Date();
-  g.setFont("7x11Numeric7Seg",2);
-  g.setFontAlign(1,-1);
+  const n=new Date();
+  g.setFont("7x11Numeric7Seg",2).setFontAlign(1,-1);
   g.drawString(pad2(n.getHours())+":"+pad2(n.getMinutes()), R.x2-2, R.y+2);
 
-  // Title
-  g.setFont("8x12");
-  g.setFontAlign(-1,-1);
+  g.setFont("8x12").setFontAlign(-1,-1);
   g.drawString("Weekly Schedule", R.x+2, R.y+2);
 
-  // Table geometry
-  const headerH = 24;
-  const rowH = 18;
-  const listTop = R.y + headerH + 4;
-  const rowsFit = Math.max(3, Math.floor((R.y2 - listTop - 2) / rowH));
+  const headerH=24, rowH=18, listTop=R.y+headerH+4;
+  const rowsFit=Math.max(3, Math.floor((R.y2-listTop-2)/rowH));
 
-  // ensure topIndex keeps cursor visible
-  if (cursor < topIndex) topIndex = cursor;
-  if (cursor >= topIndex + rowsFit) topIndex = cursor - rowsFit + 1;
+  if (cursor<topIndex) topIndex=cursor;
+  if (cursor>=topIndex+rowsFit) topIndex=cursor-rowsFit+1;
 
-  // highlight "next" upcoming
-  const nextIdx = findNextIndex();
+  const nextIdx=findNextIndex();
 
-  // draw rows
-  for (let r=0; r<rowsFit; r++){
-    const idx = topIndex + r;
-    if (idx >= SCHEDULE.length) break;
-    const y = listTop + r*rowH;
+  for (let r=0;r<rowsFit;r++){
+    const idx=topIndex+r; if (idx>=SCHEDULE.length) break;
+    const y=listTop+r*rowH;
+    g.setColor(0.4,0.4,0.4).drawRect(R.x+1,y,R.x2-1,y+rowH);
 
-    // row border
-    g.setColor(0.4,0.4,0.4);
-    g.drawRect(R.x+1, y, R.x2-1, y+rowH);
+    if (idx===nextIdx){ g.setColor(1,0.8,0).drawRect(R.x+1,y,R.x2-1,y+rowH); }
+    if (idx===cursor){ g.setColor(1,0,0).drawRect(R.x+2,y+1,R.x2-2,y+rowH-1); }
 
-    // highlight upcoming in yellow
-    if (idx === nextIdx){
-      g.setColor(1,0.8,0);
-      g.drawRect(R.x+1, y, R.x2-1, y+rowH);
-    }
-    // highlight cursor in red
-    if (idx === cursor){
-      g.setColor(1,0,0);
-      g.drawRect(R.x+2, y+1, R.x2-2, y+rowH-1);
-    }
-
-    const ev = SCHEDULE[idx];
+    const ev=SCHEDULE[idx];
     const label = pad2(ev.sh)+":"+pad2(ev.sm)+"-"+pad2(ev.eh)+":"+pad2(ev.em)
-                  +" "+dayName(ev.dow,3)+" "+(ev.cn.length>20?ev.cn.slice(0,20)+"…":ev.cn);
-    g.setColor(1,1,1);
-    g.setFont("8x12");
-    g.setFontAlign(-1,-1);
+      +" "+dayName(ev.dow,3)+" "+(ev.cn.length>20?ev.cn.slice(0,20)+"…":ev.cn);
+    g.setColor(1,1,1).setFont("8x12").setFontAlign(-1,-1);
     g.drawString(label, R.x+6, y+2);
   }
-
-  // footer hint
-  g.setFont("6x8");
-  g.setFontAlign(0,1);
-  g.drawString("Swipe ↑/↓ to move • Tap to view", R.x + W/2, R.y2-2);
-}
-
-function drawInfo(){
-  const R = Bangle.appRect;
-  g.reset();
-  g.clearRect(R.x, R.y, R.x2, R.y2);
-
-  if (!SCHEDULE.length){
-    g.setFont("8x12");
-    g.setFontAlign(0,0);
-    g.drawString("No events", R.x + R.w/2, R.y + R.h/2);
-    return;
-  }
-
-  const ev = SCHEDULE[Math.min(cursor, SCHEDULE.length-1)];
-  const titleLines = splitWords(ev.cn, 14);
-
-  // Time header
-  const n = new Date();
-  g.setFont("7x11Numeric7Seg",2);
-  g.setFontAlign(1,-1);
-  g.drawString(pad2(n.getHours())+":"+pad2(n.getMinutes()), R.x2-2, R.y+2);
-
-  // Details
-  g.setFont("8x12",2);
-  g.setFontAlign(-1,-1);
-  let y = R.y + 30;
-  for (let i=0;i<titleLines.length;i++){
-    g.drawString(titleLines[i], R.x+6, y);
-    y += 24;
-  }
-
-  g.setFont("8x12");
-  g.drawString(dayName(ev.dow,1), R.x+6, y+6);
-  g.drawString(pad2(ev.sh)+":"+pad2(ev.sm)+"-"+pad2(ev.eh)+":"+pad2(ev.em), R.x+6, y+24);
-
-  // footer hint
-  g.setFont("6x8");
-  g.setFontAlign(0,1);
-  g.drawString("Tap to return • Swipe ↑/↓ to pick", R.x + R.w/2, R.y2-2);
+  g.setFont("6x8").setFontAlign(0,1);
+  g.drawString("Swipe ↑/↓ to move • Tap to view", R.x+W/2, R.y2-2);
 }
 
 function splitWords(str, max){
-  const out = [];
-  let s = String(str||"");
-  while (s.length > max){
-    let cut = s.slice(0, max).lastIndexOf(" ");
-    if (cut <= 0) cut = max;
-    out.push(s.slice(0,cut));
-    s = s.slice(cut).trimStart();
+  const out=[]; let s=String(str||"");
+  while (s.length>max){
+    let cut=s.slice(0,max).lastIndexOf(" "); if (cut<=0) cut=max;
+    out.push(s.slice(0,cut)); s=s.slice(cut).trimStart();
   }
-  if (s) out.push(s);
-  return out;
+  if (s) out.push(s); return out;
 }
 
-function draw(){
-  if (scene === "LIST") drawList();
-  else drawInfo();
+function drawInfo(){
+  const R=Bangle.appRect; g.reset(); g.clearRect(R.x,R.y,R.x2,R.y2);
+  if (!SCHEDULE.length){ g.setFont("8x12").setFontAlign(0,0); g.drawString("No events", R.x+R.w/2, R.y+R.h/2); return; }
+  const ev=SCHEDULE[Math.min(cursor,SCHEDULE.length-1)];
+  const lines=splitWords(ev.cn,14);
+
+  const n=new Date();
+  g.setFont("7x11Numeric7Seg",2).setFontAlign(1,-1);
+  g.drawString(pad2(n.getHours())+":"+pad2(n.getMinutes()), R.x2-2, R.y+2);
+
+  g.setFont("8x12",2).setFontAlign(-1,-1);
+  let y=R.y+30; for (let i=0;i<lines.length;i++){ g.drawString(lines[i], R.x+6,y); y+=24; }
+  g.setFont("8x12"); g.drawString(dayName(ev.dow,1), R.x+6, y+6);
+  g.drawString(pad2(ev.sh)+":"+pad2(ev.sm)+"-"+pad2(ev.eh)+":"+pad2(ev.em), R.x+6, y+24);
+  g.setFont("6x8").setFontAlign(0,1);
+  g.drawString("Tap to return • Swipe ↑/↓ to pick", R.x+(R.w/2), R.y2-2);
 }
 
-// ------- Input (Bangle.js 2) -------
-Bangle.on("swipe", (lr, ud) => {
-  if (!SCHEDULE.length) return;
-  if (ud === -1) { // swipe up -> previous
-    if (cursor > 0) cursor--;
-    draw();
-  } else if (ud === 1) { // swipe down -> next
-    if (cursor < SCHEDULE.length-1) cursor++;
-    draw();
-  }
-});
+function draw(){ if (scene==="LIST") drawList(); else drawInfo(); }
 
-// Single physical button exists; tap anywhere toggles scene
-Bangle.on("touch", () => {
-  scene = (scene === "LIST") ? "INFO" : "LIST";
-  draw();
+Bangle.on("swipe",(lr,ud)=>{ if(!SCHEDULE.length) return;
+  if (ud===-1){ if (cursor>0) cursor--; draw(); }
+  else if (ud===1){ if (cursor<SCHEDULE.length-1) cursor++; draw(); }
 });
+Bangle.on("touch",()=>{ scene=(scene==="LIST")?"INFO":"LIST"; draw(); });
 
-// ------- Setup -------
-Bangle.loadWidgets();
-Bangle.drawWidgets();
-const tick = setInterval(draw, 15000); // refresh time display periodically
-g.setClipRect(Bangle.appRect.x, Bangle.appRect.y, Bangle.appRect.x2, Bangle.appRect.y2);
+Bangle.loadWidgets(); Bangle.drawWidgets();
+const tick=setInterval(draw,15000);
+g.setClipRect(Bangle.appRect.x,Bangle.appRect.y,Bangle.appRect.x2,Bangle.appRect.y2);
 draw();
-
-// On unload, cleanup
-Bangle.on("kill", () => { clearInterval(tick); });
-
-// (Optional) Export a minimal API for other apps
-global.getSchoolSchedule = () => SCHEDULE;
+Bangle.on("kill",()=>{ clearInterval(tick); });
 `;
+      }
 
-        // Send finished app
-        sendCustomizedApp({
-          storage: [
-            { name: "schoolCalendar.app.js", url: "app.js", content: app },
-          ]
-        });
-      });
+      // Required by the Bangle uploader
+      function sendCustomizedApp(payload){ window.postMessage({type:"customize-app", payload}, "*"); }
     </script>
 
-    <div id="calendar"></div>
+    <!-- Bind the gapi/gis onload handlers -->
+    <script>
+      // These must be global for the async script tags
+      window.onload = () => {
+        if (typeof gapi !== "undefined") { gapiLoaded(); }
+        if (typeof google !== "undefined" && google.accounts && google.accounts.oauth2) { gisLoaded(); }
+      };
+    </script>
   </body>
 </html>
