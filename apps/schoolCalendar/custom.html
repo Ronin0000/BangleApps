@@ -1,416 +1,319 @@
 <html>
   <head>
     <style>
-      body {
-        padding: 0;
-        margin: 0;
-      }
-      html, body, #map {
-        height: 100%;
-        width: 100%;
-      }
+      body { padding:0; margin:0; }
+      html, body, #map { height:100%; width:100%; }
       #controls {
-        padding: 10px;
-        margin: 10px;
-        border: 1px solid black;
-        position:absolute;
-        right:0px;bottom:0px;
-        background-color: rgb(255, 255, 255);
-        z-index: 100;
+        padding:10px; margin:10px; border:1px solid black;
+        position:absolute; right:0; bottom:0;
+        background:#fff; z-index:100;
       }
     </style>
-     <link href='fullcalendar/main.css' rel='stylesheet' />
-     <link rel="stylesheet" href="../../css/spectre.min.css">
+    <link href="fullcalendar/main.css" rel="stylesheet" />
+    <link rel="stylesheet" href="../../css/spectre.min.css">
   </head>
   <body>
     <div>
-      <p>Create your events on the week shown. Keep in note that your events repeat weekly.</p>
-      <p>One you have created your events, Click <button id="upload" class="btn btn-primary">Upload</button>.</p>
-      <p>All day events are not supported. A feature that lets you get the calendar from your watch will be added in a future update.</p>
+      <p>Create your events on the week shown. (They repeat weekly.)</p>
+      <p>When done, click <button id="upload" class="btn btn-primary">Upload</button>.</p>
+      <p>All-day events are not supported.</p>
     </div>
-    
-    <script src='fullcalendar/main.js'></script>
+
+    <script src="fullcalendar/main.js"></script>
     <script src="../../core/lib/customize.js"></script>
 
     <script>
-      var calendar;
-      document.addEventListener('DOMContentLoaded', function() {
-        var calendarEl = document.getElementById('calendar');
+      let calendar;
+
+      document.addEventListener("DOMContentLoaded", function () {
+        const calendarEl = document.getElementById("calendar");
         calendar = new FullCalendar.Calendar(calendarEl, {
-          initialView: 'timeGridWeek',
-          headerToolbar: {
-            left: '',
-            center: 'title',
-            right: 'timeGridWeek,listWeek'
+          initialView: "timeGridWeek",
+          headerToolbar: { left: "", center: "title", right: "timeGridWeek,listWeek" },
+          navLinks: true,
+          editable: true,
+          selectable: true,
+          selectMirror: true,
+          nowIndicator: true,
+          height: 600,
+          initialDate: "2018-06-03",
+          select: function (arg) {
+            if (arg.allDay) {
+              alert("All-day events are not supported. Please select a time range.");
+              calendar.unselect();
+              return;
+            }
+            const title = prompt("Event Title:");
+            if (title) {
+              calendar.addEvent({
+                title: title.trim(),
+                start: arg.start,
+                end: arg.end,
+                allDay: false
+              });
+            }
+            calendar.unselect();
           },
-        navLinks: true, // can click day/week names to navigate views
-        editable: true,
-        selectable: true,
-        selectMirror: true,
-        nowIndicator: true,
-        editable: true,
-        height: 600,
-        initialDate: '2018-06-03', // will be parsed as local
-        select: function(arg) {
-          var title = prompt('Event Title:');
-          if (title) {
-            calendar.addEvent({
-              title: title,
-              start: arg.start,
-              end: arg.end,
-              allDay: arg.allDay
-            })
+          eventClick: function (arg) {
+            if (confirm("Delete this event?")) arg.event.remove();
           }
-          calendar.unselect()
-         
-        },
-        eventClick: function(arg) {
-          if (confirm('Are you sure you want to delete this event?')) {
-            arg.event.remove()
-          }
-        },
         });
         calendar.render();
       });
-      
-        // When the 'upload' button is clicked...
-        document.getElementById("upload").addEventListener("click", function () {
-            //Cacultate data:
-            var calendarEvents = calendar.getEvents();
-            let schedule = []
-            //--------------------
-            for(i=0;i<calendarEvents.length;i++){
-              var calendarEntry = {}
-              calendarEntry['cn'] = calendarEvents[i].title;
-              calendarEntry['dow'] = calendarEvents[i].start.getDate()-3;
-              calendarEntry['sh'] = calendarEvents[i].start.getHours();
-              calendarEntry['sm'] = calendarEvents[i].start.getMinutes();
-              calendarEntry['eh'] = calendarEvents[i].end.getHours();
-              calendarEntry['em'] = calendarEvents[i].end.getMinutes();
-              schedule.push(calendarEntry)
-            }
-            // build the app's text using a templated String
-            var app = `
+
+      function buildSchedule() {
+        const events = calendar.getEvents();
+        const schedule = [];
+
+        for (let i = 0; i < events.length; i++) {
+          const e = events[i];
+          if (!e.start || !e.end || e.allDay) continue; // skip invalid/all-day
+
+          const s = new Date(e.start);
+          const t = new Date(e.end);
+
+          schedule.push({
+            cn: String(e.title || "").trim(),
+            dow: s.getDay(),            // 0=Sun..6=Sat
+            sh: s.getHours(),
+            sm: s.getMinutes(),
+            eh: t.getHours(),
+            em: t.getMinutes()
+          });
+        }
+
+        // sort by start minute-of-week
+        schedule.sort((a, b) => {
+          const am = a.dow*1440 + a.sh*60 + a.sm;
+          const bm = b.dow*1440 + b.sh*60 + b.sm;
+          return am - bm;
+        });
+
+        return schedule;
+      }
+
+      document.getElementById("upload").addEventListener("click", function () {
+        const schedule = buildSchedule();
+
+        const app = `
+/* Bangle.js 2 weekly schedule viewer (autogenerated) */
+const Storage = require("Storage");
+const Layout = require("Layout");
 require("Font8x12").add(Graphics);
-require("Font7x11Numeric7Seg", 2).add(Graphics);
-var file = require("Storage").open("calendarItems.csv","w");
-let nIntervId;
-function redrawScreen() {
-  layout.render(layout.background);
-  layout.render(layout.buttons);
-  draw();
+require("Font7x11Numeric7Seg").add(Graphics);
+
+// ------- Data from uploader -------
+const RAW_SCHEDULE = ${JSON.stringify(schedule)};
+
+// Precompute minutes-of-week and sort (safety if user edits on-watch later)
+const SCHEDULE = RAW_SCHEDULE.map(e => ({
+  cn: e.cn,
+  dow: e.dow|0,
+  sh: e.sh|0,
+  sm: e.sm|0,
+  eh: e.eh|0,
+  em: e.em|0,
+  startMin: (e.dow|0)*1440 + (e.sh|0)*60 + (e.sm|0),
+  endMin:   (e.dow|0)*1440 + (e.eh|0)*60 + (e.em|0)
+})).sort((a,b)=>a.startMin-b.startMin);
+
+// Persist JSON for other apps/tools if needed
+Storage.writeJSON("schoolCalendar.json", SCHEDULE);
+
+// ------- Helpers -------
+function pad2(n){ return (n<10?"0":"")+n; }
+function dayName(d, mode){ // 0=Sun..6=Sat
+  const full = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const shrt = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const one  = ["S","M","T","W","R","F","S"];
+  if (mode===1) return full[d]||"";
+  if (mode===2) return shrt[d]||"";
+  return one[d]||"";
 }
-function updateDay(ffunction,day){
-  if(ffunction == 1){
-    switch (day) {
-    case 0:
-      return "Sunday";
-    case 1:
-      day = "Monday";
-      break;
-    case 2:
-      day = "Tuesday";
-      break;
-    case 3:
-      day = "Wednesday";
-      break;
-    case 4:
-      day = "Thursday";
-      break;
-    case 5:
-      day = "Friday";
-      break;
-    case 6:
-      day = "Saturday";
-    }
-    return day;
-  }else if(ffunction == 2){
-    switch (day) {
-    case 0:
-      return "Sun";
-    case 1:
-      day = "Mon";
-      break;
-    case 2:
-      day = "Tue";
-      break;
-    case 3:
-      day = "Wed";
-      break;
-    case 4:
-      day = "Thu";
-      break;
-    case 5:
-      day = "Fri";
-      break;
-    case 6:
-      day = "Sat";
-    }
-    return day;
-  }else if(ffunction == 3){
-    switch (day) {
-    case 0:
-      return "S";
-    case 1:
-      day = "M";
-      break;
-    case 2:
-      day = "T";
-      break;
-    case 3:
-      day = "W";
-      break;
-    case 4:
-      day = "R";
-      break;
-    case 5:
-      day = "F";
-      break;
-    case 6:
-      day = "S";
-    }
-    return day;
+function nowMinuteOfWeek(){
+  const n = new Date();
+  return n.getDay()*1440 + n.getHours()*60 + n.getMinutes();
+}
+function findNextIndex(){
+  if (!SCHEDULE.length) return -1;
+  const m = nowMinuteOfWeek();
+  for (let i=0;i<SCHEDULE.length;i++){
+    if (SCHEDULE[i].startMin > m) return i;
   }
-}
-function getScheduleTable() {
-  let schedule = ${JSON.stringify(schedule)};
-  logDebug(JSON.stringify(schedule));
-  return schedule;
+  return 0; // wrap-around to first of the week
 }
 
-function findNextScheduleIndex() {
-  var schedule = getScheduleTable();
-  var currentDate = new Date();
-  var minuteOfWeek = (currentDate.getDay()*3600)+(currentDate.getHours()*60)+currentDate.getMinutes();
-  //var minuteOfWeek = (4*3600)+(16*60)+0;
-  var currentPosition;
-  for(currentPosition = 0;currentPosition < schedule.length; currentPosition++){
-    var scheduleItemStartMinuteOfWeek = schedule[currentPosition].dow*3600 + schedule[currentPosition].eh*60+schedule[currentPosition].em;
-    if(scheduleItemStartMinuteOfWeek > minuteOfWeek) {
-      return currentPosition;
-    }
-  }
-  return 0;
-}
-function getUpArrow() {return require("heatshrink").decompress(atob("hkOyANKmv9AIIjRCoYZRlvdAI8U3YVK3oBJC4Mc7YVRC4sc7gVCzoBNC4oZDGowXGR58lvoBFC9FcAIoXongBFC58dngBFC6EcAIoPHA"));}
-function getDownArrow() {return require("heatshrink").decompress(atob("hkOyALImv9AIojPmvdAIoXPlvdAIoXQ3oBFC9GdAIoXnkt9AIoPPAI8U3cc7cc7gBBDIVcAJYXFGYwXOLpU8AI4XBO5sdjgBFR54ZFBpIA=="));}
-function getMenuIcon() {return require("heatshrink").decompress(atob("iEQyBC/AEU+rwBEn02js17st3stvklrkljkc/cc3cUzYBBD5AdUD4oA/P/4A/P/4A/ADoA=="));}
-function getDotIcon() {return require("heatshrink").decompress(atob("iEQyBC/AA0t3oBBA4ndAIIPGA4gAFkt9lt9AYIHEzoBBBIwRED41cks8AYIJGA44RGP8xtGP44RJBYh1CAIIHHBJJ/KroBBPoqBFB4YRDAA8dngHHBJKdq3oBDBI4RNP4l9AIYHHBJJBJks8AIIHTAH4ABA="));}
-var currentPositionTable = 0;
-var numberOfItemsShown = 8;
-//Table Positions:
-var rectStart = 45;
-var rectEnd = 65;
-var rectStartX = 10;
-var rectEndX = 210;
-//Scences:
-LIST = 1;
-INFORMATION = 2;
-currentStage = LIST;
-function splitter(str, l){
-    var strs = [];
-    while(str.length > l){
-        var pos = str.substring(0, l).lastIndexOf(' ');
-        pos = pos <= 0 ? l : pos;
-        strs.push(str.substring(0, pos));
-        var i = str.indexOf(' ', pos)+1;
-        if(i < pos || i > pos+l)
-            i = pos;
-        str = str.substring(i);
-    }
-    strs.push(str);
-    return strs;
-}
-function updateMinutesToCurrentTime(currentMinuteFunction) {
-  if (currentMinuteFunction<10){
-   currentMinuteUpdatedFunction = "0"+currentMinuteFunction;
-  }else{
-   currentMinuteUpdatedFunction = currentMinuteFunction;
-  }
-  return currentMinuteUpdatedFunction;
-}
-function renderBackground(l) {
-  g.clearRect(0,0,240,20);
-  g.drawImage(getBackgroundImage(),110,130,{scale:9,rotate:0});
-}
-function renderTable(l) {
-  var foundNumber = findNextScheduleIndex();
-  var yellowIndex = 3;
-  if (foundNumber < 3) { yellowIndex = foundNumber; }
-  for(var x = 0;x<=numberOfItemsShown;x++){
-    g.setColor(255,255,255);
-    g.drawRect(rectStartX,rectStart+(x*20),rectEndX,rectEnd+(20*x));
-  }
-  g.setColor(255,205,0);
-  g.drawRect(rectStartX,rectStart+(yellowIndex*20),rectEndX,rectEnd+(20*yellowIndex));
-  g.setColor(255,0,0);
-  g.drawRect(rectStartX,rectStart+(currentPositionTable*20),rectEndX,rectEnd+(20*currentPositionTable));
-}
-function renderTableText(l) {
-  var foundSchedule = getScheduleTable();
-  var foundNumber = findNextScheduleIndex();
-  var startNumber = foundNumber - 2;
-  if (startNumber < 0) { startNumber = 0; }
-  var endNumber = startNumber + 8 - (foundNumber - startNumber);
-  if (endNumber > foundSchedule.length-1) { endNumber = foundSchedule.length-1; }
-  var scheduleHourUpdated;
-  var scheduleMinuteUpdated;
-  for(var currentNumber = startNumber; currentNumber<=endNumber; currentNumber++){
-    scheduleMinuteUpdatedStart = updateMinutesToCurrentTime(foundSchedule[currentNumber].sm);
-    scheduleHourUpdatedStart = foundSchedule[currentNumber].sh;
-    scheduleMinuteUpdatedEnd = updateMinutesToCurrentTime(foundSchedule[currentNumber].em);
-    scheduleHourUpdatedEnd = foundSchedule[currentNumber].eh;
-    scheduleDecriptionUpdated = foundSchedule[currentNumber].cn.substring(0, 20);
-    if(foundSchedule[currentNumber].cn.length >= 15){
-      scheduleDecriptionUpdated = foundSchedule[currentNumber].cn.substring(0, 20)+"...";
-    }
-    schduleDay = updateDay(3,foundSchedule[currentNumber].dow);
-    g.setFont("8x12");
-    g.drawString(scheduleHourUpdatedStart+":"+scheduleMinuteUpdatedStart+"-"+scheduleHourUpdatedEnd+":"+scheduleMinuteUpdatedEnd+" "+schduleDay+" "+scheduleDecriptionUpdated,13,50+(currentNumber*20));
-  }
-}
-function buttonsF(l){
-  if(currentStage == LIST){
-    g.drawImage(getDotIcon(),223.5,115);
-  }else{
-     g.drawImage(getMenuIcon(),223.5,115);
-  }
-  g.drawImage(getUpArrow(),225,30);
-  g.drawImage(getDownArrow(),225,215);
-}
-function draw() {
-  var currentDate = new Date();
-  var currentDayOfWeek = currentDate.getDay();
-  var currentHour = currentDate.getHours();
-  var currentMinute = currentDate.getMinutes();
-  var currentMinuteUpdated = updateMinutesToCurrentTime(currentMinute);
-  if (layout) {
-    if(currentStage == LIST){
-      layout.time.label = currentHour+":"+currentMinuteUpdated;
-      layout.time.x = 147;
-      layout.time.y = 10;
-      layout.render(layout.table);
-      layout.render(layout.tableText);
-      logDebug("Rendered"+currentPositionTable);
-    }else{
-      layout.time.label = currentHour+":"+currentMinuteUpdated;
-      layout.time.x = 147;
-      layout.time.y = 10;
-      layout.render(layout.info);
-      logDebug("Rendered"+currentPositionTable);
-    }
-    g.clearRect(150,0,220,35);
-    layout.render(layout.time);
-  }
-}
-function RedRectDown() {
-  if(currentPositionTable > 0){
-    currentPositionTable -= 1;
-    if(currentStage == INFORMATION){
-      redrawScreen();
-    }else{
-      draw();
-    }
-  }
-}
-function RedRectUp() {
-  if(currentPositionTable < numberOfItemsShown){
-    currentPositionTable += 1;
-    if(currentStage == INFORMATION){
-      redrawScreen();
-    }else{
-      draw();
-    }
-  }
-}
-function renderMiniBackground(l){
-  for(var i = 233;i<=240;i++){
-    g.drawImage(getBackgroundImage(),i,123,{scale:10,rotate:0});
-  }
-}
-function renderLoading(l){
+// ------- UI State -------
+let scene = "LIST"; // or "INFO"
+let cursor = Math.max(0, findNextIndex()); // which row is 'selected'
+let topIndex = 0; // topmost row in list viewport
+
+// ------- Drawing -------
+function drawList(){
+  const R = Bangle.appRect;
+  const W = R.w, H = R.h;
+  g.reset();
+  g.clearRect(R.x, R.y, R.x2, R.y2);
+
+  // Time header
+  const n = new Date();
+  g.setFont("7x11Numeric7Seg",2);
+  g.setFontAlign(1,-1);
+  g.drawString(pad2(n.getHours())+":"+pad2(n.getMinutes()), R.x2-2, R.y+2);
+
+  // Title
   g.setFont("8x12");
-  g.drawString("Loading...",240/2-20,240/2-20);
-}
-function renderInformation(l){
-  var foundNumber = findNextScheduleIndex();
-  var foundSchedule = getScheduleTable();
-  var startNumber = foundNumber - 2;
-  if (startNumber < 0) { startNumber = 0; }
-  if ((startNumber+currentPositionTable) <= foundSchedule.length-1) {
-    scheduleMinuteUpdatedStart = updateMinutesToCurrentTime(foundSchedule[foundNumber].sm);
-    scheduleHourUpdatedStart = foundSchedule[foundNumber].sh;
-    scheduleMinuteUpdatedEnd = updateMinutesToCurrentTime(foundSchedule[foundNumber].em);
-    scheduleHourUpdatedEnd = foundSchedule[foundNumber].eh;
-    scheduleDay = updateDay(1,foundSchedule[(startNumber+currentPositionTable)].dow);
-    g.setColor(255,255,255);
-    g.setFont("8x12",2);
-    var splitClassNames = splitter(foundSchedule[(startNumber+currentPositionTable)].cn, 15);
-    var currentY = 5;
-    for (var j=0; j < splitClassNames.length; j++) {
-      g.drawString(splitClassNames[j],13,currentY+50);
-      currentY = currentY + 25;
+  g.setFontAlign(-1,-1);
+  g.drawString("Weekly Schedule", R.x+2, R.y+2);
+
+  // Table geometry
+  const headerH = 24;
+  const rowH = 18;
+  const listTop = R.y + headerH + 4;
+  const rowsFit = Math.max(3, Math.floor((R.y2 - listTop - 2) / rowH));
+
+  // ensure topIndex keeps cursor visible
+  if (cursor < topIndex) topIndex = cursor;
+  if (cursor >= topIndex + rowsFit) topIndex = cursor - rowsFit + 1;
+
+  // highlight "next" upcoming
+  const nextIdx = findNextIndex();
+
+  // draw rows
+  for (let r=0; r<rowsFit; r++){
+    const idx = topIndex + r;
+    if (idx >= SCHEDULE.length) break;
+    const y = listTop + r*rowH;
+
+    // row border
+    g.setColor(0.4,0.4,0.4);
+    g.drawRect(R.x+1, y, R.x2-1, y+rowH);
+
+    // highlight upcoming in yellow
+    if (idx === nextIdx){
+      g.setColor(1,0.8,0);
+      g.drawRect(R.x+1, y, R.x2-1, y+rowH);
     }
+    // highlight cursor in red
+    if (idx === cursor){
+      g.setColor(1,0,0);
+      g.drawRect(R.x+2, y+1, R.x2-2, y+rowH-1);
+    }
+
+    const ev = SCHEDULE[idx];
+    const label = pad2(ev.sh)+":"+pad2(ev.sm)+"-"+pad2(ev.eh)+":"+pad2(ev.em)
+                  +" "+dayName(ev.dow,3)+" "+(ev.cn.length>20?ev.cn.slice(0,20)+"…":ev.cn);
+    g.setColor(1,1,1);
     g.setFont("8x12");
-    g.drawString(schduleDay,13,currentY+50);
-    g.drawString(scheduleHourUpdatedStart+":"+scheduleMinuteUpdatedStart+"-"+scheduleHourUpdatedEnd+":"+scheduleMinuteUpdatedEnd,13,currentY+15+50);
+    g.setFontAlign(-1,-1);
+    g.drawString(label, R.x+6, y+2);
   }
+
+  // footer hint
+  g.setFont("6x8");
+  g.setFontAlign(0,1);
+  g.drawString("Swipe ↑/↓ to move • Tap to view", R.x + W/2, R.y2-2);
 }
-var Layout = require("Layout");
-var layout = new Layout(
-  {type:"h", c: [
-    {type:"custom", render:renderTableText, id:"tableText"},
-    {type:"custom", render:buttonsF, id:"buttons"},
-    {type:"custom", render:renderBackground, id:"background"},
-    {type:"custom", render:renderTable, id:"table"},
-    {type:"custom", render:renderMiniBackground, id:"miniBackground"},
-    {type:"custom", render:renderLoading, id:"loading"},
-    {type:"custom", render:renderInformation, id:"info"},
-    {type:"txt", font:"7x11Numeric7Seg:2", label:"00:00", id:"time"},
-  ]},
-  {type:"v", c:[
-  ]},
-  {btns:[
-    {label:"", cb: RedRectUp()},
-    {label:"", cb: l=>print("Two")},
-    {label:"", cb: RedRectDown()}
-]});
-function getBackgroundImage() {return require("heatshrink").decompress(atob("j0ZyEKIf4A4gIB6gQB6gYB6ggB6goB6gwB6g4B6hAABAYIBHBZIVLAK8IhIBXgAThhQB6hYB6hgB6hoB6hwB6h4B6iAB6iIB6iQBHiAJOB54XSiYB6igB6ioB6iwB6i4B5A="));}
-function logDebug(message) {console.log(message);}
-function changeScene(){
-  layout.render(layout.buttons);
-  if(currentStage == INFORMATION){
-    currentStage = LIST;
-    nIntervId = setInterval(redrawScreen, 100000);
-  }else if(currentStage == LIST){
-    currentStage = INFORMATION;
-    clearInterval();
+
+function drawInfo(){
+  const R = Bangle.appRect;
+  g.reset();
+  g.clearRect(R.x, R.y, R.x2, R.y2);
+
+  if (!SCHEDULE.length){
+    g.setFont("8x12");
+    g.setFontAlign(0,0);
+    g.drawString("No events", R.x + R.w/2, R.y + R.h/2);
+    return;
   }
-  layout.render(layout.background);
-  layout.render(layout.buttons);
+
+  const ev = SCHEDULE[Math.min(cursor, SCHEDULE.length-1)];
+  const titleLines = splitWords(ev.cn, 14);
+
+  // Time header
+  const n = new Date();
+  g.setFont("7x11Numeric7Seg",2);
+  g.setFontAlign(1,-1);
+  g.drawString(pad2(n.getHours())+":"+pad2(n.getMinutes()), R.x2-2, R.y+2);
+
+  // Details
+  g.setFont("8x12",2);
+  g.setFontAlign(-1,-1);
+  let y = R.y + 30;
+  for (let i=0;i<titleLines.length;i++){
+    g.drawString(titleLines[i], R.x+6, y);
+    y += 24;
+  }
+
+  g.setFont("8x12");
+  g.drawString(dayName(ev.dow,1), R.x+6, y+6);
+  g.drawString(pad2(ev.sh)+":"+pad2(ev.sm)+"-"+pad2(ev.eh)+":"+pad2(ev.em), R.x+6, y+24);
+
+  // footer hint
+  g.setFont("6x8");
+  g.setFontAlign(0,1);
+  g.drawString("Tap to return • Swipe ↑/↓ to pick", R.x + R.w/2, R.y2-2);
+}
+
+function splitWords(str, max){
+  const out = [];
+  let s = String(str||"");
+  while (s.length > max){
+    let cut = s.slice(0, max).lastIndexOf(" ");
+    if (cut <= 0) cut = max;
+    out.push(s.slice(0,cut));
+    s = s.slice(cut).trimStart();
+  }
+  if (s) out.push(s);
+  return out;
+}
+
+function draw(){
+  if (scene === "LIST") drawList();
+  else drawInfo();
+}
+
+// ------- Input (Bangle.js 2) -------
+Bangle.on("swipe", (lr, ud) => {
+  if (!SCHEDULE.length) return;
+  if (ud === -1) { // swipe up -> previous
+    if (cursor > 0) cursor--;
+    draw();
+  } else if (ud === 1) { // swipe down -> next
+    if (cursor < SCHEDULE.length-1) cursor++;
+    draw();
+  }
+});
+
+// Single physical button exists; tap anywhere toggles scene
+Bangle.on("touch", () => {
+  scene = (scene === "LIST") ? "INFO" : "LIST";
   draw();
-}
-// timeout used to update every minute
-var drawTimeout;
-setInterval(draw, 15000);
-setWatch(RedRectUp, BTN3, { repeat:true, edge:'rising', debounce : 50 });
-setWatch(RedRectDown, BTN1, { repeat:true, edge:'rising', debounce : 50 });
-setWatch(changeScene, BTN2, { repeat:true, edge:'rising', debounce : 50 });
-layout.update();
-layout.render(layout.loading);
-layout.render(layout.background);
-layout.render(layout.buttons);
+});
+
+// ------- Setup -------
+Bangle.loadWidgets();
+Bangle.drawWidgets();
+const tick = setInterval(draw, 15000); // refresh time display periodically
+g.setClipRect(Bangle.appRect.x, Bangle.appRect.y, Bangle.appRect.x2, Bangle.appRect.y2);
 draw();
-file.write(JSON.stringify(schedule));
+
+// On unload, cleanup
+Bangle.on("kill", () => { clearInterval(tick); });
+
+// (Optional) Export a minimal API for other apps
+global.getSchoolSchedule = () => SCHEDULE;
 `;
-            // send finished app (in addition to contents of app.json)
-            sendCustomizedApp({
-                storage: [
-                    { name: "schoolCalendar.app.js", url: "app.js", content: app },
-                ]
-            });
+
+        // Send finished app
+        sendCustomizedApp({
+          storage: [
+            { name: "schoolCalendar.app.js", url: "app.js", content: app },
+          ]
         });
+      });
     </script>
-    <div id='calendar'></div>
+
+    <div id="calendar"></div>
   </body>
 </html>
