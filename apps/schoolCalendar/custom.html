@@ -18,7 +18,18 @@
       .gs-row input { width: 460px; max-width: 80vw; }
       .muted { opacity: .8; font-size: 12px; margin: 4px 10px 8px; }
       .tag { font-size: 11px; padding:2px 6px; border:1px solid #ccc; border-radius: 10px; }
+
+      /* tiny toast */
+      #toast {
+        position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+        background: #222; color: #fff; padding: 10px 14px; border-radius: 8px;
+        font-size: 13px; z-index: 9999; display: none; max-width: 90vw;
+      }
+      #toast.ok { background: #22863a; }
+      #toast.warn { background: #b08800; }
+      #toast.err { background: #b00020; }
     </style>
+
     <link href="fullcalendar/main.css" rel="stylesheet" />
     <link rel="stylesheet" href="../../css/spectre.min.css">
 
@@ -27,19 +38,16 @@
       // These flags are reused later by the main script.
       let gapiReady = false, gisReady = false;
 
-      // Called by Google API script onload
       function gapiLoaded(){
         if (window.gapi && gapi.load) {
           gapi.load("client", async () => {
             if (typeof initGapi === "function") {
               try { await initGapi(); } catch(e){ console.error(e); }
             }
-            // If main script already defined refreshSetupIndicators, update UI
             if (typeof refreshSetupIndicators === "function") refreshSetupIndicators();
           });
         }
       }
-      // Called by Google Identity script onload
       function gisLoaded(){
         gisReady = true;
         if (typeof refreshSetupIndicators === "function") refreshSetupIndicators();
@@ -105,11 +113,23 @@
     </p>
 
     <div id="calendar"></div>
+    <div id="toast"></div>
 
     <script src="fullcalendar/main.js"></script>
     <script src="../../core/lib/customize.js"></script>
 
     <script>
+      // ---------- little toast ----------
+      const toastEl = document.getElementById('toast');
+      function toast(msg, kind="ok", ms=2200){
+        toastEl.textContent = msg;
+        toastEl.className = ""; // reset
+        toastEl.classList.add(kind);
+        toastEl.style.display = "block";
+        clearTimeout(toastEl._t);
+        toastEl._t = setTimeout(()=>{ toastEl.style.display = "none"; }, ms);
+      }
+
       // ---------- persisted settings (no-code) ----------
       const K = { API_KEY: "gcal_api_key", CLIENT_ID: "gcal_client_id" };
       const discoveryDoc = "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest";
@@ -161,9 +181,7 @@
         btnToday.onclick = () => calendar.today();
       });
 
-      // ---------- Google API bootstrap (continuation of prelude) ----------
-      // Flags defined in prelude (top of file):
-      // let gapiReady = false, gisReady = false;
+      // ---------- Google API bootstrap ----------
       let tokenClient = null, authed = false;
 
       function refreshSetupIndicators(){
@@ -191,10 +209,13 @@
           try {
             await gapi.client.init({ apiKey: loadSetting(K.API_KEY), discoveryDocs: [discoveryDoc] });
             gapiReady = true;
+            toast("API key saved.", "ok");
           } catch (e) {
             console.error("gapi re-init error", e);
-            alert("Failed to init Google API client. Check your API key.");
+            toast("Failed to init Google API client. Check your API key.", "err", 4000);
           }
+        } else {
+          toast("Keys saved.", "ok");
         }
       });
 
@@ -212,12 +233,11 @@
           refreshSetupIndicators();
         } catch (e) {
           console.error("gapi init error", e);
-          alert("Failed to init Google API client. Check your API key.");
+          toast("Failed to init Google API client. Check your API key.", "err", 4000);
         }
       }
 
       async function ensureGoogleReady(){
-        // Wait/ensure gapi
         if (!gapiReady) {
           if (window.gapi && gapi.load) {
             await new Promise((res,rej)=>{
@@ -230,18 +250,17 @@
             throw new Error("Google API script not loaded yet");
           }
         }
-        // Ensure GIS token client (or refresh after keys change)
         if (!gisReady) throw new Error("Google Identity script not loaded yet");
         if (!tokenClient) {
           tokenClient = google.accounts.oauth2.initTokenClient({
             client_id: loadSetting(K.CLIENT_ID),
-            scope: scopes,
+            scope: "https://www.googleapis.com/auth/calendar.readonly",
             callback: (resp) => {
               if (resp.error) {
                 const msg = (resp.error === "access_denied")
-                  ? "Access denied. Add your account under OAuth consent screen → Test users."
+                  ? "Access denied. Add your account under OAuth → Test users."
                   : "OAuth error: " + resp.error;
-                alert(msg);
+                toast(msg, "err", 5000);
                 console.error("OAuth error", resp);
                 return;
               }
@@ -249,6 +268,7 @@
               authed = true;
               onAuthChanged(true);
               loadCalendarList();
+              toast("Signed in.", "ok");
             }
           });
         } else {
@@ -262,7 +282,7 @@
           tokenClient.requestAccessToken({ prompt: "consent" });
         } catch (e) {
           console.error(e);
-          alert("Google libraries not ready yet. Save keys and try again.");
+          toast("Google libraries not ready. Save keys and try again.", "warn", 4000);
         }
       });
 
@@ -274,6 +294,7 @@
         gapi.client.setToken(null);
         authed = false;
         onAuthChanged(false);
+        toast("Signed out.", "ok");
       });
 
       function onAuthChanged(isAuthed){
@@ -296,15 +317,14 @@
             selCal.appendChild(opt);
           });
           selCal.onchange = () => { btnImport.disabled = !selCal.value || !authed; };
-          // Auto-select first real calendar to reduce clicks
           if (selCal.options.length > 1) { selCal.selectedIndex = 1; selCal.onchange(); }
         } catch (e) {
           console.error(e);
-          alert("Failed to load calendar list.");
+          toast("Failed to load calendar list.", "err", 4000);
         }
       }
 
-      // ---------- Import logic (supports all-day and ranges up to 1 year) ----------
+      // ---------- Import logic ----------
       function addDuration(baseDate, code){
         const d = new Date(baseDate);
         const n = parseInt(code,10);
@@ -315,15 +335,14 @@
       }
 
       btnImport.addEventListener("click", async () => {
-        if (!selCal.value) { alert("Pick a calendar first."); return; }
+        if (!selCal.value) { toast("Pick a calendar first.", "warn"); return; }
         const view = calendar.view;
-        const start = new Date(view.activeStart); // use current view start
+        const start = new Date(view.activeStart);
         const rangeCode = selRange.value || "0w";
         const end = rangeCode==="0w" ? new Date(view.activeEnd) : addDuration(start, rangeCode);
 
         if (chkClear.checked) calendar.getEvents().forEach(ev => ev.remove());
 
-        // Page through results if needed
         let pageToken = null, added = 0, skipped = 0, split = 0;
         try {
           do {
@@ -331,7 +350,7 @@
               calendarId: selCal.value,
               timeMin: start.toISOString(),
               timeMax: end.toISOString(),
-              singleEvents: true,   // expand recurrences
+              singleEvents: true,
               orderBy: "startTime",
               showDeleted: false,
               maxResults: 2500,
@@ -341,7 +360,6 @@
             for (const it of items) {
               const title = (it.summary || "").trim();
 
-              // All-day event?
               if (it.start && it.start.date && !it.start.dateTime) {
                 const s = new Date(it.start.date + "T00:00:00");
                 const e = new Date(it.end.date + "T00:00:00");
@@ -350,7 +368,6 @@
                 continue;
               }
 
-              // Timed event
               if (!it.start || !it.start.dateTime || !it.end || !it.end.dateTime) { skipped++; continue; }
               const s = new Date(it.start.dateTime);
               const e = new Date(it.end.dateTime);
@@ -359,7 +376,6 @@
                 calendar.addEvent({ title, start: s, end: e, allDay: false });
                 added++;
               } else {
-                // Split cross-midnight into two timed chunks
                 const endOfStart = new Date(s); endOfStart.setHours(23,59,0,0);
                 calendar.addEvent({ title, start: s, end: endOfStart, allDay: false });
                 if (!(e.getHours()===0 && e.getMinutes()===0)) {
@@ -372,19 +388,58 @@
             pageToken = res.result.nextPageToken || null;
           } while (pageToken);
 
-          alert(`Imported ${added} events.${skipped?` Skipped ${skipped}.`:""}${split?` (${split} split over midnight)`: ""}`);
+          toast(`Imported ${added}${skipped?`, skipped ${skipped}`:""}${split?`, ${split} split`:""}.`, "ok", 3500);
         } catch (e) {
           console.error(e);
-          alert("Failed to import events. Check console.");
+          toast("Failed to import events. See console.", "err", 5000);
         }
       });
 
       // ---------- Build schedule & Upload ----------
-      btnUpload.addEventListener("click", () => {
-        const schedule = buildScheduleFromCalendar();
-        const app = makeBangle2App(schedule);
-        sendCustomizedApp({ storage: [{ name: "schoolCalendar.app.js", url: "app.js", content: app }] });
+      btnUpload.addEventListener("click", async () => {
+        try {
+          btnUpload.disabled = true;
+          toast("Preparing app…");
+
+          const schedule = buildScheduleFromCalendar();
+          const app = makeBangle2App(schedule);
+
+          // Prefer the App Loader's function if present
+          if (typeof window.sendCustomizedApp === "function") {
+            window.sendCustomizedApp({
+              storage: [{ name: "schoolCalendar.app.js", url: "app.js", content: app }]
+            });
+            toast("Sent to App Loader. Finish upload there.", "ok", 4000);
+          } else if (window.parent && window.parent !== window) {
+            // Fallback: try postMessage to parent
+            window.parent.postMessage({ type: "customize-app", payload: {
+              storage: [{ name: "schoolCalendar.app.js", url: "app.js", content: app }]
+            }}, "*");
+            toast("Posted to parent window. If nothing happens, use the download fallback.", "warn", 5000);
+            // Also offer download
+            downloadFile("schoolCalendar.app.js", app);
+          } else {
+            // Pure fallback: download file and show instructions
+            downloadFile("schoolCalendar.app.js", app);
+            toast("Downloaded .app.js. Open Espruino App Loader → More → Upload a File (or drag-drop).", "warn", 6000);
+          }
+        } catch (e) {
+          console.error(e);
+          toast("Upload failed. See console.", "err", 5000);
+        } finally {
+          btnUpload.disabled = false;
+        }
       });
+
+      function downloadFile(name, content){
+        const blob = new Blob([content], {type: "text/plain"});
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+      }
 
       function buildScheduleFromCalendar() {
         const events = calendar.getEvents();
@@ -433,7 +488,6 @@
           }
         }
 
-        // Sort: all-day first within each day, then time
         out.sort((a,b)=>{
           const am = a.dow*1440 + (a.ad? -1 : (a.sh*60 + a.sm));
           const bm = b.dow*1440 + (b.ad? -1 : (b.sh*60 + b.sm));
@@ -442,7 +496,7 @@
         return out;
       }
 
-      // ---------- Bangle.js 2 viewer (supports all-day) ----------
+      // ---------- Bangle.js 2 viewer ----------
       function makeBangle2App(schedule){
         return `
 const Storage=require("Storage");
@@ -510,9 +564,6 @@ const tick=setInterval(draw,15000); g.setClipRect(Bangle.appRect.x,Bangle.appRec
 draw(); Bangle.on("kill",()=>clearInterval(tick));
 `;
       }
-
-      // Uploader shim for Espruino App Loader
-      function sendCustomizedApp(payload){ window.postMessage({type:"customize-app", payload}, "*"); }
     </script>
   </body>
 </html>
