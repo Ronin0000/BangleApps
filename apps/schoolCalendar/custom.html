@@ -22,7 +22,31 @@
     <link href="fullcalendar/main.css" rel="stylesheet" />
     <link rel="stylesheet" href="../../css/spectre.min.css">
 
-    <!-- Google APIs -->
+    <!-- PRELUDE: define onload handlers early so async script tags can call them safely -->
+    <script>
+      // These flags are reused later by the main script.
+      let gapiReady = false, gisReady = false;
+
+      // Called by Google API script onload
+      function gapiLoaded(){
+        if (window.gapi && gapi.load) {
+          gapi.load("client", async () => {
+            if (typeof initGapi === "function") {
+              try { await initGapi(); } catch(e){ console.error(e); }
+            }
+            // If main script already defined refreshSetupIndicators, update UI
+            if (typeof refreshSetupIndicators === "function") refreshSetupIndicators();
+          });
+        }
+      }
+      // Called by Google Identity script onload
+      function gisLoaded(){
+        gisReady = true;
+        if (typeof refreshSetupIndicators === "function") refreshSetupIndicators();
+      }
+    </script>
+
+    <!-- Google APIs (async) -->
     <script src="https://apis.google.com/js/api.js" async defer onload="gapiLoaded()"></script>
     <script src="https://accounts.google.com/gsi/client" async defer onload="gisLoaded()"></script>
   </head>
@@ -72,7 +96,7 @@
         <span class="muted">Keys are stored locally in your browser (localStorage).</span>
       </div>
       <div class="gs-row">
-        <span class="muted">Make sure your OAuth client has your page origin (e.g. <code>https://ronin0000.github.io</code>) in <em>Authorized JavaScript origins</em>.</span>
+        <span class="muted">Add your origin (e.g. <code>https://ronin0000.github.io</code>) to OAuth “Authorized JavaScript origins”. Put your Gmail under “Test users”.</span>
       </div>
     </details>
 
@@ -87,10 +111,7 @@
 
     <script>
       // ---------- persisted settings (no-code) ----------
-      const K = {
-        API_KEY: "gcal_api_key",
-        CLIENT_ID: "gcal_client_id"
-      };
+      const K = { API_KEY: "gcal_api_key", CLIENT_ID: "gcal_client_id" };
       const discoveryDoc = "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest";
       const scopes = "https://www.googleapis.com/auth/calendar.readonly";
 
@@ -122,13 +143,11 @@
           select: function (arg) {
             const title = prompt("Event Title:");
             if (!title) { calendar.unselect(); return; }
-            // Support all-day creation if the user selected the whole day column
-            const allDay = !!arg.allDay;
             calendar.addEvent({
               title: title.trim(),
               start: arg.start,
               end: arg.end,
-              allDay: allDay
+              allDay: !!arg.allDay
             });
             calendar.unselect();
           },
@@ -142,25 +161,36 @@
         btnToday.onclick = () => calendar.today();
       });
 
-      // ---------- Google API bootstrap ----------
-      let gapiReady = false, gisReady = false, tokenClient = null, authed = false;
+      // ---------- Google API bootstrap (continuation of prelude) ----------
+      // Flags defined in prelude (top of file):
+      // let gapiReady = false, gisReady = false;
+      let tokenClient = null, authed = false;
 
       function refreshSetupIndicators(){
         const hasKey = !!loadSetting(K.API_KEY);
         const hasClient = !!loadSetting(K.CLIENT_ID);
+
         setupStatus.textContent = (hasKey && hasClient) ? "saved" : "not saved";
         setupStatus.style.color = (hasKey && hasClient) ? "green" : "red";
-        btnSignin.disabled = !(hasKey && hasClient) || !gapiReady || !gisReady;
+
+        // Only require keys to enable the button; libs can init on demand
+        btnSignin.disabled = !(hasKey && hasClient);
+        btnSignout.disabled = !authed;
+
+        selCal.disabled   = !authed;
+        selRange.disabled = !authed;
+        btnImport.disabled = !authed || !selCal.value;
       }
 
       btnSave.addEventListener("click", async () => {
         saveSetting(K.API_KEY, inputKey.value.trim());
         saveSetting(K.CLIENT_ID, inputClient.value.trim());
         refreshSetupIndicators();
-        // Re-init gapi client with the new key
-        if (gapiReady) {
+        // If gapi already present, re-init with the new key
+        if (window.gapi && gapi.client) {
           try {
             await gapi.client.init({ apiKey: loadSetting(K.API_KEY), discoveryDocs: [discoveryDoc] });
+            gapiReady = true;
           } catch (e) {
             console.error("gapi re-init error", e);
             alert("Failed to init Google API client. Check your API key.");
@@ -186,29 +216,56 @@
         }
       }
 
-      function gapiLoaded(){ if (window.gapi && gapi.load) gapi.load("client", initGapi); }
-      function gisLoaded(){
-        tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: loadSetting(K.CLIENT_ID),
-          scope: scopes,
-          callback: (resp) => {
-            if (resp.error) { console.error(resp); alert("OAuth error. Check console."); return; }
-            gapi.client.setToken({ access_token: resp.access_token });
-            authed = true;
-            onAuthChanged(true);
-            loadCalendarList();
+      async function ensureGoogleReady(){
+        // Wait/ensure gapi
+        if (!gapiReady) {
+          if (window.gapi && gapi.load) {
+            await new Promise((res,rej)=>{
+              gapi.load("client", async () => {
+                try { await gapi.client.init({ apiKey: loadSetting(K.API_KEY), discoveryDocs: [discoveryDoc] }); gapiReady = true; res(); }
+                catch(e){ rej(e); }
+              });
+            });
+          } else {
+            throw new Error("Google API script not loaded yet");
           }
-        });
-        gisReady = true;
-        refreshSetupIndicators();
+        }
+        // Ensure GIS token client (or refresh after keys change)
+        if (!gisReady) throw new Error("Google Identity script not loaded yet");
+        if (!tokenClient) {
+          tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: loadSetting(K.CLIENT_ID),
+            scope: scopes,
+            callback: (resp) => {
+              if (resp.error) {
+                const msg = (resp.error === "access_denied")
+                  ? "Access denied. Add your account under OAuth consent screen → Test users."
+                  : "OAuth error: " + resp.error;
+                alert(msg);
+                console.error("OAuth error", resp);
+                return;
+              }
+              gapi.client.setToken({ access_token: resp.access_token });
+              authed = true;
+              onAuthChanged(true);
+              loadCalendarList();
+            }
+          });
+        } else {
+          tokenClient.client_id = loadSetting(K.CLIENT_ID);
+        }
       }
 
-      btnSignin.addEventListener("click", () => {
-        if (!tokenClient) return;
-        // rebind client_id in case user just saved it
-        tokenClient.client_id = loadSetting(K.CLIENT_ID);
-        tokenClient.requestAccessToken({ prompt: "consent" });
+      btnSignin.addEventListener("click", async () => {
+        try {
+          await ensureGoogleReady();
+          tokenClient.requestAccessToken({ prompt: "consent" });
+        } catch (e) {
+          console.error(e);
+          alert("Google libraries not ready yet. Save keys and try again.");
+        }
       });
+
       btnSignout.addEventListener("click", () => {
         const tok = gapi.client.getToken();
         if (tok && tok.access_token) {
@@ -239,6 +296,8 @@
             selCal.appendChild(opt);
           });
           selCal.onchange = () => { btnImport.disabled = !selCal.value || !authed; };
+          // Auto-select first real calendar to reduce clicks
+          if (selCal.options.length > 1) { selCal.selectedIndex = 1; selCal.onchange(); }
         } catch (e) {
           console.error(e);
           alert("Failed to load calendar list.");
@@ -281,12 +340,11 @@
             const items = res.result.items || [];
             for (const it of items) {
               const title = (it.summary || "").trim();
+
               // All-day event?
               if (it.start && it.start.date && !it.start.dateTime) {
                 const s = new Date(it.start.date + "T00:00:00");
                 const e = new Date(it.end.date + "T00:00:00");
-                // Add as all-day block(s); if spans multiple days, we’ll render daily on the watch as repeating weekly
-                // For the editor grid, FullCalendar wants allDay:true with start/end as date or dateTime
                 calendar.addEvent({ title, start: s, end: e, allDay: true });
                 added++;
                 continue;
@@ -342,7 +400,6 @@
           });
         }
         function pushAllDay(title, date){
-          // Represent all-day for that weekday; watch will label "All-day"
           out.push({
             cn: String(title||"").trim(),
             dow: date.getDay(),
@@ -354,7 +411,6 @@
         for (const e of events) {
           if (!e.start || !e.end) continue;
 
-          // All-day: FullCalendar gives date boundaries; we emit one entry per day in the span
           if (e.allDay) {
             const s = new Date(e.start);
             const end = new Date(e.end);
@@ -455,7 +511,7 @@ draw(); Bangle.on("kill",()=>clearInterval(tick));
 `;
       }
 
-      // Uploader shim
+      // Uploader shim for Espruino App Loader
       function sendCustomizedApp(payload){ window.postMessage({type:"customize-app", payload}, "*"); }
     </script>
   </body>
