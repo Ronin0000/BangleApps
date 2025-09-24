@@ -3,726 +3,567 @@
     <meta charset="utf-8" />
     <title>School Calendar → Bangle.js 2</title>
     <style>
-      :root{
-        --bg:#fff; --fg:#111; --muted:#6b7280; --line:#e5e7eb;
-        --accent:#2563eb; --ok:#22863a; --warn:#b08800; --err:#b00020;
-        --chip-border:#d1d5db;
+      body { padding:0; margin:0; font-family: system-ui, sans-serif; }
+      html, body, #calendar { height:100%; width:100%; }
+      #controls {
+        position: sticky; top:0; z-index: 10;
+        background:#fff; padding:10px; border-bottom:1px solid #ddd;
+        display:flex; flex-wrap:wrap; gap:8px; align-items:center;
       }
-      *{ box-sizing:border-box; }
-      body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; color:var(--fg); background:var(--bg); }
-      a{ color:var(--accent); text-decoration:none }
-      a:hover{ text-decoration:underline }
-      .toolbar{
-        position:sticky; top:0; z-index:20; background:var(--bg);
-        border-bottom:1px solid var(--line);
+      .spacer { flex: 1 1 auto; }
+      details.google-setup {
+        margin: 6px 10px; padding: 8px; border: 1px solid #ddd; border-radius: 6px; background:#fafafa;
       }
-      .row{ display:flex; gap:8px; align-items:center; padding:8px 12px; flex-wrap:wrap; }
-      .row .title{ font-weight:600; margin-right:8px; }
-      .spacer{ flex:1 1 auto }
-      .btn{ border:1px solid var(--line); background:#f9fafb; padding:6px 10px; border-radius:8px; cursor:pointer; }
-      .btn:disabled{ opacity:.55; cursor:not-allowed }
-      .btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent); }
-      .btn.success{ background:var(--ok); color:#fff; border-color:var(--ok); }
-      .seg{ display:inline-flex; border:1px solid var(--line); border-radius:10px; overflow:hidden }
-      .seg button{ border:0; background:#f9fafb; padding:6px 10px; }
-      .seg button.active{ background:var(--accent); color:#fff; }
-      .muted{ color:var(--muted); font-size:12px }
-      .chip{ display:inline-flex; gap:6px; align-items:center; padding:2px 8px; border:1px solid var(--chip-border); border-radius:999px; background:#fff; font-size:12px; }
-      .dot{ width:10px; height:10px; border-radius:50%; }
-      .panel{ padding:8px 12px; border-bottom:1px dashed var(--line); }
-      .grid{
-        display:grid; grid-template-columns: 1fr; gap:12px; padding:12px;
-      }
-      .compare{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-      .picker{ display:flex; align-items:center; gap:8px; }
-      .picker input[type="date"]{ padding:6px 8px; border:1px solid var(--line); border-radius:8px; }
+      .gs-row { display:flex; gap:8px; margin:6px 0; align-items: center; }
+      .gs-row input { width: 460px; max-width: 80vw; }
+      .muted { opacity: .8; font-size: 12px; margin: 4px 10px 8px; }
+      .tag { font-size: 11px; padding:2px 6px; border:1px solid #ccc; border-radius: 10px; }
+
+      /* tiny toast */
       #toast {
         position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
         background: #222; color: #fff; padding: 10px 14px; border-radius: 8px;
         font-size: 13px; z-index: 9999; display: none; max-width: 90vw;
       }
-      #toast.ok { background: var(--ok); }
-      #toast.warn { background: var(--warn); }
-      #toast.err { background: var(--err); }
-
-      /* FullCalendar theming tweaks */
-      .fc .fc-toolbar{ display:none; } /* we use our own toolbar */
-      .fc .fc-timegrid-axis-cushion, .fc .fc-list-day-text, .fc .fc-list-day-side-text { font-size:12px; }
-      .fc .fc-timegrid-slot-label-cushion { font-size:12px; }
-      .fc .fc-event{ border-radius:6px; border-width:0; }
-      .fc .fc-timegrid-now-indicator-line{ border-color: var(--accent); }
-      .fc .fc-timegrid-now-indicator-arrow{ border-top-color: var(--accent); }
-      .fc .fc-col-header-cell-cushion{ font-weight:600; }
-      .fc .fc-daygrid-day-number{ font-weight:600; }
-      .fc .fc-scrollgrid-shrink{ border-right:1px solid var(--line); }
+      #toast.ok { background: #22863a; }
+      #toast.warn { background: #b08800; }
+      #toast.err { background: #b00020; }
     </style>
 
     <link href="fullcalendar/main.css" rel="stylesheet" />
+    <link rel="stylesheet" href="../../css/spectre.min.css">
+
+    <!-- PRELUDE: define onload handlers early so async script tags can call them safely -->
+    <script>
+      // These flags are reused later by the main script.
+      let gapiReady = false, gisReady = false;
+
+      function gapiLoaded(){
+        if (window.gapi && gapi.load) {
+          gapi.load("client", async () => {
+            if (typeof initGapi === "function") {
+              try { await initGapi(); } catch(e){ console.error(e); }
+            }
+            if (typeof refreshSetupIndicators === "function") refreshSetupIndicators();
+          });
+        }
+      }
+      function gisLoaded(){
+        gisReady = true;
+        if (typeof refreshSetupIndicators === "function") refreshSetupIndicators();
+      }
+    </script>
+
+    <!-- Google APIs (async) -->
     <script src="https://apis.google.com/js/api.js" async defer onload="gapiLoaded()"></script>
     <script src="https://accounts.google.com/gsi/client" async defer onload="gisLoaded()"></script>
-    <script>
-      // Early handlers for async loads
-      let gapiReady=false, gisReady=false;
-      function gapiLoaded(){ if (window.gapi && gapi.load) gapi.load("client", async()=>{ if (typeof initGapi==='function') await initGapi(); if (typeof refreshUI==='function') refreshUI(); }); }
-      function gisLoaded(){ gisReady=true; if (typeof refreshUI==='function') refreshUI(); }
-    </script>
   </head>
   <body>
-    <!-- Toolbar -->
-    <div class="toolbar">
-      <div class="row">
-        <div class="title">School Calendar</div>
-        <div class="seg" id="viewSeg">
-          <button data-view="timeGridDay">Day</button>
-          <button data-view="timeGridWeek" class="active">Week</button>
-          <button data-view="listWeek">List</button>
-        </div>
+    <div id="controls">
+      <button id="prev" class="btn">◀ Prev</button>
+      <button id="today" class="btn">Today</button>
+      <button id="next" class="btn">Next ▶</button>
 
-        <div class="picker">
-          <button class="btn" id="prevBtn">◀</button>
-          <button class="btn" id="todayBtn">Today</button>
-          <button class="btn" id="nextBtn">▶</button>
-          <input id="jumpDate" type="date" />
-        </div>
+      <div class="spacer"></div>
 
-        <div class="spacer"></div>
+      <button id="signin" class="btn btn-primary" disabled>Sign in with Google</button>
+      <button id="signout" class="btn" disabled>Sign out</button>
 
-        <button id="signin" class="btn primary" disabled>Sign in with Google</button>
-        <button id="signout" class="btn" disabled>Sign out</button>
-        <button id="importBtn" class="btn" disabled>Import</button>
-        <select id="rangeSel" class="btn" title="Import horizon">
-          <option value="0w">This week</option>
-          <option value="4w">4 weeks</option>
-          <option value="3m">3 months</option>
-          <option value="6m">6 months</option>
-          <option value="1y">1 year</option>
-        </select>
-        <label class="btn"><input type="checkbox" id="clearBefore" checked> Clear first</label>
-        <button id="upload" class="btn success">Upload to Watch</button>
-      </div>
+      <select id="calendarSelect" class="form-select" disabled>
+        <option value="">Select a calendar…</option>
+      </select>
 
-      <!-- Google + calendars panel -->
-      <div class="row panel" id="googlePanel">
-        <div id="statusChip" class="chip"><span class="dot" style="background:#aaa"></span><span id="statusText">Keys not saved</span></div>
-        <div class="spacer"></div>
-        <div id="keysBox">
-          <input id="apiKey" placeholder="API Key (Calendar API)" style="width:320px; padding:6px 10px; border:1px solid var(--line); border-radius:8px;">
-          <input id="clientId" placeholder="OAuth Client ID (Web)" style="width:420px; padding:6px 10px; border:1px solid var(--line); border-radius:8px;">
-          <button id="saveKeys" class="btn">Save</button>
-          <span class="muted">Add your origin to OAuth “Authorized JavaScript origins”. Add your Gmail to “Test users”.</span>
-        </div>
-      </div>
+      <select id="importRange" class="form-select" disabled title="How far to import from the current view start">
+        <option value="0w">This week only</option>
+        <option value="4w">Next 4 weeks</option>
+        <option value="3m">Next 3 months</option>
+        <option value="6m">Next 6 months</option>
+        <option value="1y">Next 1 year</option>
+      </select>
 
-      <!-- Calendar selection & compare view -->
-      <div class="row panel">
-        <div id="calPicker"></div>
-        <div class="spacer"></div>
-        <label class="btn"><input type="checkbox" id="compareToggle"> Compare view (side-by-side)</label>
-        <select id="compareLeft" class="btn" disabled title="Left person/calendar"></select>
-        <select id="compareRight" class="btn" disabled title="Right person/calendar"></select>
-      </div>
+      <label class="form-switch" style="margin:0 8px;">
+        <input id="clearBeforeImport" type="checkbox" checked>
+        <i class="form-icon"></i> Clear existing before import
+      </label>
+      <button id="importWeek" class="btn" disabled>Import</button>
+      <button id="upload" class="btn btn-success">Upload to Watch</button>
     </div>
 
-    <!-- Main calendars -->
-    <div id="mainWrap" class="grid">
-      <div id="mainCal"></div>
-      <div id="compareWrap" class="compare" style="display:none;">
-        <div>
-          <div class="muted" style="padding:0 2px 6px;">Left</div>
-          <div id="leftCal"></div>
-        </div>
-        <div>
-          <div class="muted" style="padding:0 2px 6px;">Right</div>
-          <div id="rightCal"></div>
-        </div>
+    <details class="google-setup">
+      <summary><strong>Google Setup</strong> <span class="tag" id="setupStatus">not saved</span></summary>
+      <div class="gs-row">
+        <label style="min-width:140px;">API Key</label>
+        <input id="apiKey" type="text" placeholder="AIza... (Calendar API key)">
       </div>
-    </div>
+      <div class="gs-row">
+        <label style="min-width:140px;">OAuth Client ID</label>
+        <input id="clientId" type="text" placeholder="xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com">
+      </div>
+      <div class="gs-row">
+        <button id="saveKeys" class="btn btn-primary">Save</button>
+        <span class="muted">Keys are stored locally in your browser (localStorage).</span>
+      </div>
+      <div class="gs-row">
+        <span class="muted">Add your origin (e.g. <code>https://ronin0000.github.io</code>) to OAuth “Authorized JavaScript origins”. Put your Gmail under “Test users”.</span>
+      </div>
+    </details>
 
+    <p class="muted">
+      Create or import events starting from the current week. They repeat weekly on the watch. All-day events are supported.
+    </p>
+
+    <div id="calendar"></div>
     <div id="toast"></div>
 
     <script src="fullcalendar/main.js"></script>
+    <script src="../../core/lib/customize.js"></script>
+
     <script>
-      /* ===== Toast ===== */
-      const toastEl=document.getElementById('toast');
-      function toast(msg,kind="ok",ms=2200){ toastEl.textContent=msg; toastEl.className=""; toastEl.classList.add(kind); toastEl.style.display="block"; clearTimeout(toastEl._t); toastEl._t=setTimeout(()=>toastEl.style.display="none",ms); }
+      // ---------- little toast ----------
+      const toastEl = document.getElementById('toast');
+      function toast(msg, kind="ok", ms=2200){
+        toastEl.textContent = msg;
+        toastEl.className = ""; // reset
+        toastEl.classList.add(kind);
+        toastEl.style.display = "block";
+        clearTimeout(toastEl._t);
+        toastEl._t = setTimeout(()=>{ toastEl.style.display = "none"; }, ms);
+      }
 
-      /* ===== Settings ===== */
-      const K={ API:"gcal_api_key", CID:"gcal_client_id" };
-      const discoveryDoc="https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest";
-      const scopes="https://www.googleapis.com/auth/calendar.readonly";
-      const load=(k,d="")=>{ try{return localStorage.getItem(k)||d;}catch(e){return d;} };
-      const save=(k,v)=>{ try{localStorage.setItem(k,v||"");}catch(e){} };
+      // ---------- persisted settings (no-code) ----------
+      const K = { API_KEY: "gcal_api_key", CLIENT_ID: "gcal_client_id" };
+      const discoveryDoc = "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest";
+      const scopes = "https://www.googleapis.com/auth/calendar.readonly";
 
-      /* ===== DOM ===== */
-      const $=id=>document.getElementById(id);
-      const viewSeg=$("viewSeg");
-      const prevBtn=$("prevBtn"), nextBtn=$("nextBtn"), todayBtn=$("todayBtn"), jumpDate=$("jumpDate");
-      const signin=$("signin"), signout=$("signout"), importBtn=$("importBtn"), rangeSel=$("rangeSel"), clearBefore=$("clearBefore");
-      const apiKeyI=$("apiKey"), clientIdI=$("clientId"), saveKeys=$("saveKeys"), statusText=$("statusText"), statusChip=$("statusChip");
-      const mainCalEl=$("mainCal"), leftCalEl=$("leftCal"), rightCalEl=$("rightCal");
-      const calPicker=$("calPicker");
-      const compareToggle=$("compareToggle"), compareLeft=$("compareLeft"), compareRight=$("compareRight");
-      const compareWrap=$("compareWrap");
-      const uploadBtn=$("upload");
+      function loadSetting(k, d=""){ try { return localStorage.getItem(k) || d; } catch(e){ return d; } }
+      function saveSetting(k, v){ try { localStorage.setItem(k, v||""); } catch(e){} }
 
-      /* ===== FullCalendar instances ===== */
-      let mainCal, leftCal, rightCal;
-      function makeCal(el){
-        return new FullCalendar.Calendar(el,{
-          initialView:"timeGridWeek",
-          nowIndicator:true, selectable:true, editable:true, selectMirror:true,
-          height:"auto",
-          allDaySlot:true,
-          slotMinTime:"06:00:00",
-          slotLabelFormat:{hour:'numeric', minute:'2-digit', hour12:true},      // 12h slots
-          eventTimeFormat:{hour:'numeric', minute:'2-digit', hour12:true},      // 12h on events
-          headerToolbar:false,
-          dayHeaderFormat:{weekday:'short', month:'short', day:'numeric'},
-          select:(arg)=>{
-            const t=prompt("Event Title:"); if(!t){ cal.unselect(); return; }
-            cal.addEvent({title:t.trim(), start:arg.start, end:arg.end, allDay:!!arg.allDay});
-            cal.unselect();
+      // ---------- UI elements ----------
+      const el = id => document.getElementById(id);
+      const btnPrev = el("prev"), btnNext = el("next"), btnToday = el("today");
+      const btnSignin = el("signin"), btnSignout = el("signout");
+      const selCal = el("calendarSelect"), selRange = el("importRange");
+      const btnImport = el("importWeek"), btnUpload = el("upload"), chkClear = el("clearBeforeImport");
+      const inputKey = el("apiKey"), inputClient = el("clientId"), btnSave = el("saveKeys"), setupStatus = el("setupStatus");
+
+      // ---------- FullCalendar ----------
+      let calendar;
+      document.addEventListener("DOMContentLoaded", () => {
+        const calendarEl = document.getElementById("calendar");
+        calendar = new FullCalendar.Calendar(calendarEl, {
+          initialView: "timeGridWeek",
+          headerToolbar: { left: "", center: "title", right: "timeGridWeek,listWeek" },
+          navLinks: true,
+          editable: true,
+          selectable: true,
+          selectMirror: true,
+          nowIndicator: true,
+          height: "auto",
+          initialDate: new Date().toISOString().slice(0,10),
+          select: function (arg) {
+            const title = prompt("Event Title:");
+            if (!title) { calendar.unselect(); return; }
+            calendar.addEvent({
+              title: title.trim(),
+              start: arg.start,
+              end: arg.end,
+              allDay: !!arg.allDay
+            });
+            calendar.unselect();
           },
-          eventClick:(arg)=>{ if(confirm("Delete this event?")) arg.event.remove(); }
+          eventClick: function (arg) {
+            if (confirm("Delete this event?")) arg.event.remove();
+          }
         });
-      }
-      document.addEventListener("DOMContentLoaded",()=>{
-        mainCal=makeCal(mainCalEl); mainCal.render();
-        leftCal=makeCal(leftCalEl); rightCal=makeCal(rightCalEl);
-        // Navigation wiring (also applies to compare if visible)
-        prevBtn.onclick=()=>{ activeCalendars().forEach(c=>c.prev()); };
-        nextBtn.onclick=()=>{ activeCalendars().forEach(c=>c.next()); };
-        todayBtn.onclick=()=>{ activeCalendars().forEach(c=>c.today()); updateJumpInput(); };
-        jumpDate.onchange=()=>{ const d=new Date(jumpDate.value); if(!isNaN(+d)) activeCalendars().forEach(c=>c.gotoDate(d)); };
-        updateJumpInput();
-        // View switch
-        viewSeg.querySelectorAll("button").forEach(b=>{
-          b.onclick=()=>{
-            viewSeg.querySelectorAll("button").forEach(x=>x.classList.remove("active"));
-            b.classList.add("active");
-            activeCalendars().forEach(c=>c.changeView(b.dataset.view));
-          };
-        });
-        // Keyboard nav
-        window.addEventListener("keydown",(e)=>{ if(e.target.tagName==='INPUT') return;
-          if(e.key==="ArrowLeft") prevBtn.click();
-          if(e.key==="ArrowRight") nextBtn.click();
-          if(e.key.toLowerCase()==="t") todayBtn.click();
-        });
+        calendar.render();
+        btnPrev.onclick = () => calendar.prev();
+        btnNext.onclick = () => calendar.next();
+        btnToday.onclick = () => calendar.today();
       });
-      function updateJumpInput(){
-        const d=mainCal.getDate(); const yyyy=d.getFullYear(), mm=String(d.getMonth()+1).padStart(2,'0'), dd=String(d.getDate()).padStart(2,'0');
-        jumpDate.value = `${yyyy}-${mm}-${dd}`;
-      }
-      function activeCalendars(){ return compareWrap.style.display==='none' ? [mainCal] : [leftCal,rightCal]; }
 
-      /* ===== Google API bootstrapping ===== */
-      let tokenClient=null, authed=false, calendarList=[];
-      function refreshUI(){
-        const hasKey=!!load(K.API), hasCID=!!load(K.CID);
-        statusText.textContent = (hasKey && hasCID) ? "Keys saved" : "Keys not saved";
-        statusChip.querySelector(".dot").style.background = (hasKey && hasCID) ? "#22c55e" : "#aaa";
-        signin.disabled=!(hasKey&&hasCID);
-        signout.disabled=!authed;
-        importBtn.disabled=!authed;
+      // ---------- Google API bootstrap ----------
+      let tokenClient = null, authed = false;
+
+      function refreshSetupIndicators(){
+        const hasKey = !!loadSetting(K.API_KEY);
+        const hasClient = !!loadSetting(K.CLIENT_ID);
+
+        setupStatus.textContent = (hasKey && hasClient) ? "saved" : "not saved";
+        setupStatus.style.color = (hasKey && hasClient) ? "green" : "red";
+
+        // Only require keys to enable the button; libs can init on demand
+        btnSignin.disabled = !(hasKey && hasClient);
+        btnSignout.disabled = !authed;
+
+        selCal.disabled   = !authed;
+        selRange.disabled = !authed;
+        btnImport.disabled = !authed || !selCal.value;
       }
 
-      saveKeys.onclick=async()=>{
-        save(K.API, apiKeyI.value.trim()); save(K.CID, clientIdI.value.trim()); refreshUI();
-        if(window.gapi && gapi.client){ try{ await gapi.client.init({ apiKey: load(K.API), discoveryDocs:[discoveryDoc] }); gapiReady=true; toast("API key saved."); }catch(e){ console.error(e); toast("Bad API key / init failed.","err",4000); } }
-      };
-      window.addEventListener("load",()=>{ apiKeyI.value=load(K.API,""); clientIdI.value=load(K.CID,""); refreshUI(); });
+      btnSave.addEventListener("click", async () => {
+        saveSetting(K.API_KEY, inputKey.value.trim());
+        saveSetting(K.CLIENT_ID, inputClient.value.trim());
+        refreshSetupIndicators();
+        // If gapi already present, re-init with the new key
+        if (window.gapi && gapi.client) {
+          try {
+            await gapi.client.init({ apiKey: loadSetting(K.API_KEY), discoveryDocs: [discoveryDoc] });
+            gapiReady = true;
+            toast("API key saved.", "ok");
+          } catch (e) {
+            console.error("gapi re-init error", e);
+            toast("Failed to init Google API client. Check your API key.", "err", 4000);
+          }
+        } else {
+          toast("Keys saved.", "ok");
+        }
+      });
+
+      // preload inputs from storage
+      window.addEventListener("load", () => {
+        inputKey.value = loadSetting(K.API_KEY, "");
+        inputClient.value = loadSetting(K.CLIENT_ID, "");
+        refreshSetupIndicators();
+      });
 
       async function initGapi(){
-        try{ await gapi.client.init({ apiKey: load(K.API), discoveryDocs:[discoveryDoc] }); gapiReady=true; refreshUI(); }
-        catch(e){ console.error("gapi init error",e); toast("Failed to init Google API client.","err",4000); }
+        try {
+          await gapi.client.init({ apiKey: loadSetting(K.API_KEY), discoveryDocs: [discoveryDoc] });
+          gapiReady = true;
+          refreshSetupIndicators();
+        } catch (e) {
+          console.error("gapi init error", e);
+          toast("Failed to init Google API client. Check your API key.", "err", 4000);
+        }
       }
 
       async function ensureGoogleReady(){
-        if(!gapiReady){
-          if(window.gapi && gapi.load){
-            await new Promise((res,rej)=>{ gapi.load("client", async()=>{ try{ await gapi.client.init({ apiKey: load(K.API), discoveryDocs:[discoveryDoc] }); gapiReady=true; res(); }catch(e){ rej(e); } }); });
-          } else throw new Error("Google API not loaded yet");
+        if (!gapiReady) {
+          if (window.gapi && gapi.load) {
+            await new Promise((res,rej)=>{
+              gapi.load("client", async () => {
+                try { await gapi.client.init({ apiKey: loadSetting(K.API_KEY), discoveryDocs: [discoveryDoc] }); gapiReady = true; res(); }
+                catch(e){ rej(e); }
+              });
+            });
+          } else {
+            throw new Error("Google API script not loaded yet");
+          }
         }
-        if(!gisReady) throw new Error("Google Identity not loaded yet");
-        if(!tokenClient){
+        if (!gisReady) throw new Error("Google Identity script not loaded yet");
+        if (!tokenClient) {
           tokenClient = google.accounts.oauth2.initTokenClient({
-            client_id: load(K.CID),
-            scope: scopes,
-            callback:(resp)=>{
-              if(resp.error){ const m=(resp.error==="access_denied")?"Access denied. Add yourself under OAuth Test users.":"OAuth error: "+resp.error; toast(m,"err",5000); return; }
-              gapi.client.setToken({ access_token: resp.access_token }); authed=true; refreshUI(); loadCalendarList(); toast("Signed in.");
+            client_id: loadSetting(K.CLIENT_ID),
+            scope: "https://www.googleapis.com/auth/calendar.readonly",
+            callback: (resp) => {
+              if (resp.error) {
+                const msg = (resp.error === "access_denied")
+                  ? "Access denied. Add your account under OAuth → Test users."
+                  : "OAuth error: " + resp.error;
+                toast(msg, "err", 5000);
+                console.error("OAuth error", resp);
+                return;
+              }
+              gapi.client.setToken({ access_token: resp.access_token });
+              authed = true;
+              onAuthChanged(true);
+              loadCalendarList();
+              toast("Signed in.", "ok");
             }
           });
-        } else tokenClient.client_id = load(K.CID);
+        } else {
+          tokenClient.client_id = loadSetting(K.CLIENT_ID);
+        }
       }
 
-      signin.onclick=async()=>{ try{ await ensureGoogleReady(); tokenClient.requestAccessToken({ prompt:"consent" }); }catch(e){ console.error(e); toast("Google libraries not ready.","warn",4000); } };
-      signout.onclick=()=>{ const tok=gapi.client.getToken(); if(tok && tok.access_token){ try{ google.accounts.oauth2.revoke(tok.access_token,()=>{}); }catch(e){} } gapi.client.setToken(null); authed=false; refreshUI(); toast("Signed out."); };
+      btnSignin.addEventListener("click", async () => {
+        try {
+          await ensureGoogleReady();
+          tokenClient.requestAccessToken({ prompt: "consent" });
+        } catch (e) {
+          console.error(e);
+          toast("Google libraries not ready. Save keys and try again.", "warn", 4000);
+        }
+      });
+
+      btnSignout.addEventListener("click", () => {
+        const tok = gapi.client.getToken();
+        if (tok && tok.access_token) {
+          try { google.accounts.oauth2.revoke(tok.access_token, ()=>{}); } catch(e){}
+        }
+        gapi.client.setToken(null);
+        authed = false;
+        onAuthChanged(false);
+        toast("Signed out.", "ok");
+      });
+
+      function onAuthChanged(isAuthed){
+        btnSignin.disabled = isAuthed;
+        btnSignout.disabled = !isAuthed;
+        selCal.disabled = !isAuthed;
+        selRange.disabled = !isAuthed;
+        btnImport.disabled = !isAuthed || !selCal.value;
+      }
 
       async function loadCalendarList(){
-        try{
-          const res = await gapi.client.calendar.calendarList.list({ minAccessRole:"reader", showHidden:false, maxResults:250 });
-          calendarList = (res.result.items||[]).map(c=>({ id:c.id, name:c.summary + (c.primary?" (Primary)":""),
-            bg:c.backgroundColor || "#4f46e5", fg:c.foregroundColor || "#fff" }));
-          renderCalendarPicker();
-          renderCompareSelectors();
-        }catch(e){ console.error(e); toast("Failed to load calendar list.","err",4000); }
+        try {
+          const res = await gapi.client.calendar.calendarList.list({minAccessRole:"reader", showHidden:false, maxResults:250});
+          const items = res.result.items || [];
+          selCal.innerHTML = '<option value="">Select a calendar…</option>';
+          items.forEach(c => {
+            const opt = document.createElement("option");
+            opt.value = c.id;
+            opt.textContent = c.summary + (c.primary ? " (Primary)" : "");
+            selCal.appendChild(opt);
+          });
+          selCal.onchange = () => { btnImport.disabled = !selCal.value || !authed; };
+          if (selCal.options.length > 1) { selCal.selectedIndex = 1; selCal.onchange(); }
+        } catch (e) {
+          console.error(e);
+          toast("Failed to load calendar list.", "err", 4000);
+        }
       }
 
-      /* ===== Calendar picker (multi-select with color chips) ===== */
-      function renderCalendarPicker(){
-        calPicker.innerHTML="";
-        if(!calendarList.length){ calPicker.innerHTML='<span class="muted">No calendars.</span>'; return; }
-        const frag=document.createDocumentFragment();
-        calendarList.forEach(c=>{
-          const id="cal_"+btoa(c.id).replace(/=/g,"");
-          const wrap=document.createElement("label"); wrap.className="chip"; wrap.style.marginRight="6px";
-          wrap.innerHTML = `<span class="dot" style="background:${c.bg}"></span><input type="checkbox" id="${id}" data-cid="${encodeURIComponent(c.id)}"> ${c.name}`;
-          frag.appendChild(wrap);
-        });
-        calPicker.appendChild(frag);
-      }
-      function renderCompareSelectors(){
-        [compareLeft, compareRight].forEach(sel=>{ sel.innerHTML='<option value="">Select…</option>'; calendarList.forEach(c=>{ const o=document.createElement("option"); o.value=c.id; o.textContent=c.name; sel.appendChild(o); }); });
-      }
-      compareToggle.onchange=()=>{
-        const on=compareToggle.checked;
-        compareLeft.disabled = compareRight.disabled = !on;
-        compareWrap.style.display = on ? "" : "none";
-        if(on){ leftCal.render(); rightCal.render(); } else { /* no-op */ }
-      };
-
-      /* ===== Import from multiple calendars ===== */
-      function addDuration(base, code){
-        const d=new Date(base), n=parseInt(code,10);
-        if(code.endsWith("w")) d.setDate(d.getDate()+n*7);
-        else if(code.endsWith("m")) d.setMonth(d.getMonth()+n);
-        else if(code.endsWith("y")) d.setFullYear(d.getFullYear()+n);
+      // ---------- Import logic ----------
+      function addDuration(baseDate, code){
+        const d = new Date(baseDate);
+        const n = parseInt(code,10);
+        if (code.endsWith("w")) d.setDate(d.getDate() + n*7);
+        else if (code.endsWith("m")) d.setMonth(d.getMonth() + n);
+        else if (code.endsWith("y")) d.setFullYear(d.getFullYear() + n);
         return d;
       }
-      importBtn.onclick = async ()=>{
-        if(!authed){ toast("Sign in first.","warn"); return; }
-        // which calendars? all checked chips
-        const chosen=[...calPicker.querySelectorAll('input[type="checkbox"]:checked')].map(i=>decodeURIComponent(i.dataset.cid));
-        if(!chosen.length){ toast("Select at least one calendar.", "warn"); return; }
 
-        const horizon=rangeSel.value||"0w";
-        const viewCal = compareToggle.checked ? leftCal : mainCal; // base dates from the visible main instance
-        const view = viewCal.view;
+      btnImport.addEventListener("click", async () => {
+        if (!selCal.value) { toast("Pick a calendar first.", "warn"); return; }
+        const view = calendar.view;
         const start = new Date(view.activeStart);
-        const end = horizon==="0w" ? new Date(view.activeEnd) : addDuration(start, horizon);
+        const rangeCode = selRange.value || "0w";
+        const end = rangeCode==="0w" ? new Date(view.activeEnd) : addDuration(start, rangeCode);
 
-        if(clearBefore.checked){
-          (compareToggle.checked?[leftCal,rightCal]:[mainCal]).forEach(c=>c.getEvents().forEach(e=>e.remove()));
-        }
+        if (chkClear.checked) calendar.getEvents().forEach(ev => ev.remove());
 
-        let total=0;
-        try{
-          for(const cid of chosen){
-            const calInfo = calendarList.find(x=>x.id===cid) || {bg:"#4f46e5", fg:"#fff"};
-            let pageToken=null;
-            do{
-              const res = await gapi.client.calendar.events.list({
-                calendarId: cid, timeMin:start.toISOString(), timeMax:end.toISOString(),
-                singleEvents:true, orderBy:"startTime", showDeleted:false, maxResults:2500, pageToken
-              });
-              (res.result.items||[]).forEach(it=>{
-                const title=(it.summary||"").trim();
-                const color = it.colorId ? null : calInfo.bg; // Google event colorId has own color; fallback to calendar color
-                const target = compareToggle.checked
-                  ? ((compareLeft.value===cid) ? leftCal : (compareRight.value===cid) ? rightCal : mainCal)
-                  : mainCal;
+        let pageToken = null, added = 0, skipped = 0, split = 0;
+        try {
+          do {
+            const res = await gapi.client.calendar.events.list({
+              calendarId: selCal.value,
+              timeMin: start.toISOString(),
+              timeMax: end.toISOString(),
+              singleEvents: true,
+              orderBy: "startTime",
+              showDeleted: false,
+              maxResults: 2500,
+              pageToken
+            });
+            const items = res.result.items || [];
+            for (const it of items) {
+              const title = (it.summary || "").trim();
 
-                // All-day?
-                if(it.start && it.start.date && !it.start.dateTime){
-                  const s=new Date(it.start.date+"T00:00:00"), e=new Date(it.end.date+"T00:00:00");
-                  target.addEvent({ title, start:s, end:e, allDay:true, backgroundColor:color, borderColor:color });
-                  total++; return;
+              if (it.start && it.start.date && !it.start.dateTime) {
+                const s = new Date(it.start.date + "T00:00:00");
+                const e = new Date(it.end.date + "T00:00:00");
+                calendar.addEvent({ title, start: s, end: e, allDay: true });
+                added++;
+                continue;
+              }
+
+              if (!it.start || !it.start.dateTime || !it.end || !it.end.dateTime) { skipped++; continue; }
+              const s = new Date(it.start.dateTime);
+              const e = new Date(it.end.dateTime);
+
+              if (s.toDateString() === e.toDateString()) {
+                calendar.addEvent({ title, start: s, end: e, allDay: false });
+                added++;
+              } else {
+                const endOfStart = new Date(s); endOfStart.setHours(23,59,0,0);
+                calendar.addEvent({ title, start: s, end: endOfStart, allDay: false });
+                if (!(e.getHours()===0 && e.getMinutes()===0)) {
+                  const startOfEnd = new Date(e); startOfEnd.setHours(0,0,0,0);
+                  calendar.addEvent({ title, start: startOfEnd, end: e, allDay: false });
                 }
-                if(!it.start || !it.start.dateTime || !it.end || !it.end.dateTime) return;
-                const s=new Date(it.start.dateTime), e=new Date(it.end.dateTime);
-                if(s.toDateString()===e.toDateString()){
-                  target.addEvent({ title, start:s, end:e, allDay:false, backgroundColor:color, borderColor:color });
-                  total++;
-                }else{
-                  const e1=new Date(s); e1.setHours(23,59,0,0);
-                  target.addEvent({ title, start:s, end:e1, allDay:false, backgroundColor:color, borderColor:color });
-                  if(!(e.getHours()===0&&e.getMinutes()===0)){
-                    const s2=new Date(e); s2.setHours(0,0,0,0);
-                    target.addEvent({ title, start:s2, end:e, allDay:false, backgroundColor:color, borderColor:color });
-                  }
-                  total+=2;
-                }
-              });
-              pageToken = res.result.nextPageToken || null;
-            } while(pageToken);
-          }
-          toast(`Imported ${total} events.`, "ok", 3500);
-        }catch(e){
-          console.error(e); toast("Import failed. See console.", "err", 5000);
-        }
-      };
+                split++; added += 2;
+              }
+            }
+            pageToken = res.result.nextPageToken || null;
+          } while (pageToken);
 
-      /* ===== Upload to Watch (App Loader + download fallback) ===== */
-      uploadBtn.onclick = ()=>{
-        try{
+          toast(`Imported ${added}${skipped?`, skipped ${skipped}`:""}${split?`, ${split} split`:""}.`, "ok", 3500);
+        } catch (e) {
+          console.error(e);
+          toast("Failed to import events. See console.", "err", 5000);
+        }
+      });
+
+      // ---------- Build schedule & Upload ----------
+      btnUpload.addEventListener("click", async () => {
+        try {
+          btnUpload.disabled = true;
+          toast("Preparing app…");
+
           const schedule = buildScheduleFromCalendar();
-          const appJS = makeBangle2App(schedule);
-          let sent=false;
-          if(typeof window.sendCustomizedApp==="function"){
-            window.sendCustomizedApp({ storage:[{ name:"schoolCalendar.app.js", url:"app.js", content:appJS }] });
-            sent=true; toast("Sent to App Loader. Complete upload there.", "ok", 4000);
-          }else if(window.parent && window.parent!==window){
-            window.parent.postMessage({ type:"customize-app", payload:{ storage:[{ name:"schoolCalendar.app.js", url:"app.js", content:appJS }] } }, "*");
-            toast("Posted to parent window. If nothing pops up, using download fallback.", "warn", 5000);
-          }
-          if(!sent){
-            const blob=new Blob([appJS],{type:"text/plain"}); const a=document.createElement("a");
-            a.href=URL.createObjectURL(blob); a.download="schoolCalendar.app.js"; document.body.appendChild(a); a.click(); a.remove();
-            toast("Downloaded .app.js. In App Loader → More → Upload a File.", "warn", 6000);
-          }
-        }catch(e){ console.error(e); toast("Upload failed.","err",5000); }
-      };
+          const app = makeBangle2App(schedule);
 
-      function buildScheduleFromCalendar(){
-        const calArr = compareToggle.checked ? [leftCal,rightCal] : [mainCal];
-        const evs = calArr.flatMap(c=>c.getEvents());
-        const out=[];
-        const pushTimed=(t,s,e)=>out.push({cn:String(t||"").trim(), dow:s.getDay(), sh:s.getHours(), sm:s.getMinutes(), eh:e.getHours(), em:e.getMinutes(), ad:0});
-        const pushAll=(t,d)=>out.push({cn:String(t||"").trim(), dow:d.getDay(), sh:0, sm:0, eh:23, em:59, ad:1});
-        evs.forEach(e=>{
-          if(!e.start || !e.end) return;
-          if(e.allDay){
-            const s=new Date(e.start), end=new Date(e.end);
-            for(let d=new Date(s); d<end; d.setDate(d.getDate()+1)) pushAll(e.title,new Date(d));
-            return;
+          // Prefer the App Loader's function if present
+          if (typeof window.sendCustomizedApp === "function") {
+            window.sendCustomizedApp({
+              storage: [{ name: "schoolCalendar.app.js", url: "app.js", content: app }]
+            });
+            toast("Sent to App Loader. Finish upload there.", "ok", 4000);
+          } else if (window.parent && window.parent !== window) {
+            // Fallback: try postMessage to parent
+            window.parent.postMessage({ type: "customize-app", payload: {
+              storage: [{ name: "schoolCalendar.app.js", url: "app.js", content: app }]
+            }}, "*");
+            toast("Posted to parent window. If nothing happens, use the download fallback.", "warn", 5000);
+            // Also offer download
+            downloadFile("schoolCalendar.app.js", app);
+          } else {
+            // Pure fallback: download file and show instructions
+            downloadFile("schoolCalendar.app.js", app);
+            toast("Downloaded .app.js. Open Espruino App Loader → More → Upload a File (or drag-drop).", "warn", 6000);
           }
-          const s=new Date(e.start), t=new Date(e.end);
-          if(s.toDateString()===t.toDateString()) pushTimed(e.title,s,t);
-          else{
-            const e1=new Date(s); e1.setHours(23,59,0,0); pushTimed(e.title,s,e1);
-            if(!(t.getHours()===0&&t.getMinutes()===0)){
-              const s2=new Date(t); s2.setHours(0,0,0,0); pushTimed(e.title,s2,t);
+        } catch (e) {
+          console.error(e);
+          toast("Upload failed. See console.", "err", 5000);
+        } finally {
+          btnUpload.disabled = false;
+        }
+      });
+
+      function downloadFile(name, content){
+        const blob = new Blob([content], {type: "text/plain"});
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+      }
+
+      function buildScheduleFromCalendar() {
+        const events = calendar.getEvents();
+        const out = [];
+
+        function pushTimed(title, s, e){
+          out.push({
+            cn: String(title||"").trim(),
+            dow: s.getDay(),
+            sh: s.getHours(), sm: s.getMinutes(),
+            eh: e.getHours(), em: e.getMinutes(),
+            ad: 0
+          });
+        }
+        function pushAllDay(title, date){
+          out.push({
+            cn: String(title||"").trim(),
+            dow: date.getDay(),
+            sh: 0, sm: 0, eh: 23, em: 59,
+            ad: 1
+          });
+        }
+
+        for (const e of events) {
+          if (!e.start || !e.end) continue;
+
+          if (e.allDay) {
+            const s = new Date(e.start);
+            const end = new Date(e.end);
+            for (let d = new Date(s); d < end; d.setDate(d.getDate()+1)) {
+              pushAllDay(e.title, new Date(d));
+            }
+            continue;
+          }
+
+          const s = new Date(e.start), t = new Date(e.end);
+          if (s.toDateString() === t.toDateString()) {
+            pushTimed(e.title, s, t);
+          } else {
+            const endOfStart = new Date(s); endOfStart.setHours(23,59,0,0);
+            pushTimed(e.title, s, endOfStart);
+            if (!(t.getHours()===0 && t.getMinutes()===0)) {
+              const startOfEnd = new Date(t); startOfEnd.setHours(0,0,0,0);
+              pushTimed(e.title, startOfEnd, t);
             }
           }
+        }
+
+        out.sort((a,b)=>{
+          const am = a.dow*1440 + (a.ad? -1 : (a.sh*60 + a.sm));
+          const bm = b.dow*1440 + (b.ad? -1 : (b.sh*60 + b.sm));
+          return am - bm;
         });
-        out.sort((a,b)=> (a.dow*1440 + (a.ad?-1:(a.sh*60+a.sm))) - (b.dow*1440 + (b.ad?-1:(b.sh*60+b.sm))) );
         return out;
       }
 
+      // ---------- Bangle.js 2 viewer ----------
       function makeBangle2App(schedule){
-  return `
-/* School Calendar – Modern Watch UI (Bangle.js 2)
-   - expects SCHEDULE written by the uploader in Storage "schoolCalendar.json"
-   - shows Day/Week views, all-day chips, rounded cards, 12h time, color-coded
-*/
-
+        return `
 const Storage=require("Storage");
 const Layout=require("Layout");
 require("Font8x12").add(Graphics);
+require("Font7x11Numeric7Seg").add(Graphics);
 
 const RAW=${JSON.stringify(schedule)};
-// Normalize + precompute
 const SCHEDULE=RAW.map(e=>({
-  cn:String(e.cn||""),
-  dow:e.dow|0, sh:e.sh|0, sm:e.sm|0, eh:e.eh|0, em:e.em|0,
-  ad:e.ad?1:0
-}));
+  cn:e.cn, dow:e.dow|0, sh:e.sh|0, sm:e.sm|0, eh:e.eh|0, em:e.em|0, ad:e.ad?1:0,
+  startMin:(e.dow|0)*1440 + (e.ad? -1 : ((e.sh|0)*60 + (e.sm|0)))
+})).sort((a,b)=>a.startMin-b.startMin);
 
-/* ---------- utils ---------- */
-function pad2(n){return (n<10?"0":"")+n;}
-function fmt12(h,m){
-  let ap=h>=12?"PM":"AM"; let H=h%12; if(H===0)H=12;
-  return H+":"+pad2(m)+" "+ap;
-}
-function dayName(d){return ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d|0];}
-function fullDayName(d){return ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][d|0];}
-function ymd(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());}
+Storage.writeJSON("schoolCalendar.json", SCHEDULE);
 
-// simple string hash for color selection
-function hash32(s){let h=2166136261>>>0; for(let i=0;i<s.length;i++){h^=s.charCodeAt(i); h=(h*16777619)>>>0;} return h>>>0;}
+function pad2(n){return(n<10?"0":"")+n;}
+function dayName(d,m){const f=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+ const s=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]; const o=["S","M","T","W","R","F","S"];
+ if(m===1)return f[d]||""; if(m===2)return s[d]||""; return o[d]||"";}
+function nowMinuteOfWeek(){const n=new Date();return n.getDay()*1440+n.getHours()*60+n.getMinutes();}
+function findNextIndex(){if(!SCHEDULE.length)return-1;const m=nowMinuteOfWeek();
+ for(let i=0;i<SCHEDULE.length;i++){const ev=SCHEDULE[i];if(ev.ad? (ev.dow*1440 > m) : ((ev.dow*1440 + ev.sh*60+ev.sm) > m)) return i;} return 0;}
 
-// Pleasant palette (Google-ish)
-const PAL=[
-  [66,133,244],[52,168,83],[251,188,4],[234,67,53],
-  [171,71,188],[0,172,193],[124,179,66],[244,180,0],
-  [255,112,67],[142,68,173],[2,136,209],[0,121,107]
-];
-function pickColorFor(ev){ return PAL[ hash32(ev.cn+":"+ev.dow)%PAL.length ]; }
+let scene="LIST",cursor=Math.max(0,findNextIndex()),topIndex=0;
 
-// rounded rect helpers
-function fillRoundRect(x,y,w,h,r, col){
-  g.setColor(col[0],col[1],col[2]);
-  g.fillRect(x+r,y, x+w-r, y+h);
-  g.fillRect(x, y+r, x+w, y+h-r);
-  g.fillCircle(x+r,y+r,r); g.fillCircle(x+w-r,y+r,r);
-  g.fillCircle(x+r,y+h-r,r); g.fillCircle(x+w-r,y+h-r,r);
-}
-function strokeRoundRect(x,y,w,h,r, col){
-  g.setColor(col[0],col[1],col[2]);
-  g.drawRect(x+r,y, x+w-r, y);
-  g.drawRect(x+r,y+h, x+w-r, y+h);
-  g.drawRect(x, y+r, x, y+h-r);
-  g.drawRect(x+w, y+r, x+w, y+h-r);
-  g.drawCircle(x+r,y+r,r); g.drawCircle(x+w-r,y+r,r);
-  g.drawCircle(x+r,y+h-r,r); g.drawCircle(x+w-r,y+h-r,r);
-}
-
-// split long text into lines
-function wrap(str,max){str=String(str||""); const out=[]; while(str.length>max){let p=str.slice(0,max).lastIndexOf(" "); if(p<=0)p=max; out.push(str.slice(0,p)); str=str.slice(p).trimStart();} if(str)out.push(str); return out;}
-
-/* ---------- index by day ---------- */
-const BYDAY=[0,1,2,3,4,5,6].map(d=>{
-  const alld=[], timed=[];
-  SCHEDULE.forEach(ev=>{
-    if(ev.dow!==d) return;
-    if(ev.ad) alld.push(ev);
-    else timed.push(ev);
-  });
-  // sort timed by start time
-  timed.sort((a,b)=> (a.sh*60+a.sm)-(b.sh*60+b.sm));
-  return {alld, timed};
-});
-
-function nowDow(){return (new Date()).getDay();}
-function isToday(dow){return dow===nowDow();}
-
-/* ---------- UI state ---------- */
-let mode="DAY";          // "DAY" or "WEEK"
-let selDay=nowDow();     // currently selected weekday
-let scrollY=0;           // vertical scroll offset for list area
-let touchStart=null;     // track drag for scroll
-
-/* ---------- layout ---------- */
-const R = Bangle.appRect;  // usable area (widgets trimmed)
-const P = { headerH:28, weekH:20, pad:6, cardH:38, r:8 };
-
-function clearApp(){ g.clearRect(R.x,R.y,R.x2,R.y2); }
-
-function drawHeader(){
-  const d=new Date();
-  // bar
-  g.setColor(245,246,250).fillRect(R.x,R.y, R.x2,R.y+P.headerH);
-  g.setColor(160,160,160).drawLine(R.x, R.y+P.headerH, R.x2, R.y+P.headerH);
-  // left: full day name + date
-  const dn=fullDayName(selDay);
-  const dd=d.toDateString().split(" ").slice(1).join(" ");
-  g.setFont("8x12").setFontAlign(-1,-1).setColor(40,40,40);
-  g.drawString(dn+"  "+dd, R.x+6, R.y+6);
-  // right: small clock (12h)
-  g.setFontAlign(1,-1);
-  g.drawString(fmt12(d.getHours(), d.getMinutes()), R.x2-6, R.y+6);
-}
-
-function drawWeekStrip(){
-  const y = R.y+P.headerH+2;
-  const w = Math.floor((R.w-2*P.pad)/7);
-  for(let d=0; d<7; d++){
-    const x = R.x+P.pad+d*w;
-    const on = d===selDay;
-    const bg = on ? [227,242,253] : [250,250,250];
-    const fg = on ? [32,99,210] : [90,90,90];
-    fillRoundRect(x, y, w-4, P.weekH, 6, bg);
-    g.setColor(fg[0],fg[1],fg[2]).setFont("6x8").setFontAlign(0,0);
-    g.drawString(dayName(d), x+(w-4)/2, y+P.weekH/2-1);
-    // dots if events exist
-    const has = BYDAY[d].alld.length+BYDAY[d].timed.length;
-    if(has>0){
-      g.setColor(120,120,120);
-      g.fillCircle(x+(w-4)/2, y+P.weekH-3, 2);
-    }
-    // today underline
-    if(isToday(d)){
-      g.setColor(32,99,210); g.drawLine(x+6, y+P.weekH+1, x+w-10, y+P.weekH+1);
-    }
+function drawList(){
+  const R=Bangle.appRect; g.reset(); g.clearRect(R.x,R.y,R.x2,R.y2);
+  const n=new Date(); g.setFont("7x11Numeric7Seg",2).setFontAlign(1,-1);
+  g.drawString(pad2(n.getHours())+":"+pad2(n.getMinutes()), R.x2-2, R.y+2);
+  g.setFont("8x12").setFontAlign(-1,-1); g.drawString("Weekly Schedule", R.x+2, R.y+2);
+  const headerH=24,rowH=18,listTop=R.y+headerH+4;
+  const rows=Math.max(3,Math.floor((R.y2-listTop-2)/rowH));
+  if(cursor<topIndex)topIndex=cursor; if(cursor>=topIndex+rows)topIndex=cursor-rows+1;
+  const next=findNextIndex();
+  for(let r=0;r<rows;r++){
+    const idx=topIndex+r; if(idx>=SCHEDULE.length)break; const y=listTop+r*rowH; const ev=SCHEDULE[idx];
+    g.setColor(.4,.4,.4).drawRect(R.x+1,y,R.x2-1,y+rowH);
+    if(idx===next){g.setColor(1,.8,0).drawRect(R.x+1,y,R.x2-1,y+rowH);}
+    if(idx===cursor){g.setColor(1,0,0).drawRect(R.x+2,y+1,R.x2-2,y+rowH-1);}
+    const time = ev.ad ? "All-day" : (pad2(ev.sh)+":"+pad2(ev.sm)+"-"+pad2(ev.eh)+":"+pad2(ev.em));
+    const label = time+" "+dayName(ev.dow,3)+" "+(ev.cn.length>20?ev.cn.slice(0,20)+"…":ev.cn);
+    g.setColor(1,1,1).setFont("8x12").setFontAlign(-1,-1); g.drawString(label, R.x+6, y+2);
   }
+  g.setFont("6x8").setFontAlign(0,1);
+  g.drawString("Swipe ↑/↓ • Tap", R.x+R.w/2, R.y2-2);
 }
-
-function drawAllDayChips(y){
-  const items = BYDAY[selDay].alld;
-  if(!items.length) return y;
-  const x0 = R.x+P.pad, maxW = R.w-2*P.pad;
-  let x=x0;
-  items.forEach(ev=>{
-    const txt = ev.cn.length>16? ev.cn.slice(0,16)+"…" : ev.cn;
-    const col = pickColorFor(ev);
-    const w = g.stringWidth(txt)+18;
-    if(x+w>R.x+R.w-P.pad){ x=x0; y+=20; }
-    fillRoundRect(x, y, w, 18, 9, [col[0],col[1],col[2]]);
-    g.setColor(255,255,255).setFont("6x8").setFontAlign(-1,-1);
-    g.drawString(txt, x+9, y+5);
-    // left dot
-    g.fillCircle(x+6, y+9, 2);
-    x += w + 6;
-  });
-  return y+22;
+function splitWords(s,m){const out=[];s=String(s||"");while(s.length>m){let c=s.slice(0,m).lastIndexOf(" ");if(c<=0)c=m;out.push(s.slice(0,c));s=s.slice(c).trimStart();}if(s)out.push(s);return out;}
+function drawInfo(){
+  const R=Bangle.appRect; g.reset(); g.clearRect(R.x,R.y,R.x2,R.y2);
+  if(!SCHEDULE.length){g.setFont("8x12").setFontAlign(0,0);g.drawString("No events",R.x+R.w/2,R.y+R.h/2);return;}
+  const ev=SCHEDULE[Math.min(cursor,SCHEDULE.length-1)], lines=splitWords(ev.cn,14);
+  const n=new Date(); g.setFont("7x11Numeric7Seg",2).setFontAlign(1,-1);
+  g.drawString(pad2(n.getHours())+":"+pad2(n.getMinutes()), R.x2-2, R.y+2);
+  g.setFont("8x12",2).setFontAlign(-1,-1); let y=R.y+30; lines.forEach(L=>{g.drawString(L,R.x+6,y);y+=24;});
+  g.setFont("8x12"); g.drawString(dayName(ev.dow,1), R.x+6, y+6);
+  g.drawString(ev.ad?"All-day":(pad2(ev.sh)+":"+pad2(ev.sm)+"-"+pad2(ev.eh)+":"+pad2(ev.em)), R.x+6, y+24);
+  g.setFont("6x8").setFontAlign(0,1); g.drawString("Tap to return • Swipe ↑/↓", R.x+R.w/2, R.y2-2);
 }
+function draw(){ if(scene==="LIST") drawList(); else drawInfo(); }
 
-function drawNowIndicator(contentY, listTopY){
-  if(!isToday(selDay)) return;
-  const n=new Date(); const min=n.getHours()*60+n.getMinutes();
-  const px = Math.round((min-6*60) * (P.cardH/60) * 0.0); // (optional) not used in card mode
-  // in card list, we draw a tiny red tick at the current time label in the nearest card
-  // Simpler: draw a thin red line across list to hint "now"
-  const y = listTopY + ( (min-480) * 0.4 ); // scale ~0.4px per minute from 8am baseline
-  if (y>listTopY && y<R.y2-8){
-    g.setColor(220,0,0);
-    g.drawLine(R.x+8, y, R.x2-8, y);
-  }
-}
-
-function drawTimedCards(yStart){
-  const list = BYDAY[selDay].timed;
-  const top = yStart;
-  const usableH = R.y2 - top - 6;
-  const contentH = list.length*(P.cardH+8);
-  // clamp scroll
-  if(scrollY<0) scrollY=0;
-  const maxScroll = Math.max(0, contentH - usableH);
-  if(scrollY>maxScroll) scrollY=maxScroll;
-
-  const y0 = top - scrollY;
-  let y = y0;
-
-  list.forEach(ev=>{
-    if(y>P.y2) return;
-    const col = pickColorFor(ev);
-    const x = R.x+6, w = R.w-12, h = P.cardH;
-    if(y+h>=top-2 && y<=R.y2){ // visible
-      // card bg
-      fillRoundRect(x, y, w, h, P.r, [248,249,251]);
-      // left color bar
-      g.setColor(col[0],col[1],col[2]); g.fillRect(x, y, x+6, y+h);
-      // text
-      g.setColor(30,30,30).setFont("8x12").setFontAlign(-1,-1);
-      const title = ev.cn.length>20 ? ev.cn.slice(0,20)+"…" : ev.cn;
-      g.drawString(title, x+12, y+6);
-      g.setColor(100,100,110).setFont("6x8");
-      g.drawString(fmt12(ev.sh,ev.sm)+" - "+fmt12(ev.eh,ev.em), x+12, y+21);
-      // 'ongoing' chip if current time inside
-      if(isToday(selDay)){
-        const n=new Date(); const now=n.getHours()*60+n.getMinutes();
-        const s=ev.sh*60+ev.sm, e=ev.eh*60+ev.em;
-        if(now>=s && now<=e){
-          const chip="now";
-          const cw=g.stringWidth(chip)+12;
-          fillRoundRect(x+w-cw-6, y+8, cw, 16, 8, [col[0],col[1],col[2]]);
-          g.setColor(255,255,255).setFont("6x8").setFontAlign(0,0);
-          g.drawString(chip, x+w-cw/2-6, y+16);
-        }
-      }
-    }
-    y += h+8;
-  });
-
-  // subtle scroll indicator
-  if(maxScroll>4){
-    const barH = Math.max(8, Math.round(usableH * usableH / contentH));
-    const barY = top + Math.round( (usableH - barH) * (scrollY / maxScroll) );
-    g.setColor(200,200,200); g.fillRect(R.x2-3, top, R.x2-2, top+usableH);
-    g.setColor(140,140,140); g.fillRect(R.x2-3, barY, R.x2-2, barY+barH);
-  }
-
-  // Now line
-  drawNowIndicator(contentH, top);
-}
-
-function drawDay(){
-  clearApp();
-  drawHeader();
-  drawWeekStrip();
-  let y = R.y + P.headerH + P.weekH + 8;
-  y = drawAllDayChips(y);
-  drawTimedCards(y);
-}
-
-function drawWeek(){
-  clearApp();
-  // compact “list of days” view
-  drawHeader();
-  drawWeekStrip();
-  let y = R.y + P.headerH + P.weekH + 8;
-  const lineY = y-4;
-  g.setColor(220,220,220).drawLine(R.x+6, lineY, R.x2-6, lineY);
-
-  const rowH = 30;
-  for(let d=0; d<7; d++){
-    const x = R.x+8;
-    const yy = y + d*rowH;
-    if(yy>R.y2-rowH) break;
-    const isSel = d===selDay;
-    const col = isSel ? [227,242,253] : [248,249,251];
-    fillRoundRect(x, yy, R.w-16, rowH-6, 8, col);
-    g.setColor(20,20,20).setFont("8x12").setFontAlign(-1,-1);
-    g.drawString(dayName(d), x+8, yy+6);
-    const {alld,timed}=BYDAY[d];
-    const total = alld.length + timed.length;
-    g.setColor(100,100,110).setFont("6x8");
-    if(total===0) g.drawString("No events", x+60, yy+8);
-    else {
-      // render a few colored dots summary + first title
-      const dots = Math.min(5, total);
-      for(let i=0;i<dots;i++){
-        const ev = (i<alld.length)? alld[i] : timed[i-alld.length];
-        const c = pickColorFor(ev);
-        g.setColor(c[0],c[1],c[2]); g.fillCircle(x+60+i*8, yy+18, 2.5);
-      }
-      const first = (timed[0]||alld[0]);
-      if(first){
-        const line = (first.ad?"All-day • ":"")+ (first.cn.length>16?first.cn.slice(0,16)+"…":first.cn);
-        g.setColor(80,84,92).drawString(line, x+60, yy+6);
-      }
-    }
-    if(isToday(d)){ g.setColor(32,99,210); g.drawLine(x+10, yy+rowH-10, x+R.w-36, yy+rowH-10); }
-  }
-}
-
-/* ---------- event handlers ---------- */
-function redraw(){ if(mode==="DAY") drawDay(); else drawWeek(); }
-
-Bangle.on("drag", e=>{
-  if(mode!=="DAY") return;
-  if (e.b) { // finger down
-    touchStart = {x:e.x, y:e.y, scrollY};
-  } else if (touchStart) { // drag
-    const dy = e.y - touchStart.y;
-    scrollY = Math.max(0, touchStart.scrollY - dy);
-    redraw();
-  }
-});
-
-Bangle.on("swipe",(lr,ud)=>{
-  if(lr===-1){ selDay = (selDay+6)%7; scrollY=0; redraw(); }
-  if(lr===1){ selDay = (selDay+1)%7; scrollY=0; redraw(); }
-  if(ud===1 && mode==="WEEK"){ mode="DAY"; redraw(); }
-  if(ud===-1 && mode==="DAY"){ mode="WEEK"; redraw(); }
-});
-
-// BTN2 toggles Day/Week
-setWatch(()=>{ mode = (mode==="DAY")?"WEEK":"DAY"; scrollY=0; redraw(); }, BTN2, {repeat:true,edge:"rising",debounce:50});
-
-/* ---------- boot ---------- */
+Bangle.on("swipe",(lr,ud)=>{ if(!SCHEDULE.length)return; if(ud===-1){if(cursor>0)cursor--;draw();} else if(ud===1){if(cursor<SCHEDULE.length-1)cursor++;draw();}});
+Bangle.on("touch",()=>{scene=(scene==="LIST")?"INFO":"LIST";draw();});
 Bangle.loadWidgets(); Bangle.drawWidgets();
-g.setClipRect(Bangle.appRect.x,Bangle.appRect.y,Bangle.appRect.x2,Bangle.appRect.y2);
-
-// if JSON exists on watch, prefer it (so the app still works when launched later)
-try{
-  const J = Storage.readJSON("schoolCalendar.json");
-  if (J && Array.isArray(J) && J.length) {
-    // overwrite BYDAY if stored JSON differs from current RAW
-    // (safe no-op if same)
-  }
-}catch(e){}
-
-redraw();
-
-// subtle refresh every 30s to keep clock/now-line fresh
-const tick=setInterval(redraw, 30000);
-Bangle.on("kill",()=>clearInterval(tick));
+const tick=setInterval(draw,15000); g.setClipRect(Bangle.appRect.x,Bangle.appRect.y,Bangle.appRect.x2,Bangle.appRect.y2);
+draw(); Bangle.on("kill",()=>clearInterval(tick));
 `;
-}
-
+      }
     </script>
   </body>
 </html>
